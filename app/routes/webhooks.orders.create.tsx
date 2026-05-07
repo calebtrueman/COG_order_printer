@@ -12,7 +12,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const result = await createPrintJobForOrder(admin, shop, orderId);
 
   console.log(
-    `Received ${topic} webhook for ${shop}; ${result.created ? "queued" : "skipped"} ${orderId}: ${result.reason}`,
+    `Received ${topic} webhook for ${shop}; ${result.created ? "handled" : "skipped"} ${orderId}: ${result.reason}`,
   );
 
   return new Response();

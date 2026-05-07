@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import PDFDocument from "pdfkit";
 import type { PrintJobStatus, Prisma } from "@prisma/client";
 import prisma from "../db.server";
 
@@ -17,10 +18,10 @@ export type LocationOption = {
 };
 
 export type DashboardPrinter = {
+  id: string;
   name: string;
-  isDefault: boolean;
-  agentName: string | null;
-  lastSeenAt: string;
+  computerName: string;
+  state: string;
 };
 
 export type DashboardJob = {
@@ -40,12 +41,14 @@ type DashboardRule = {
   locationId: string;
   locationName: string;
   printerName: string;
+  printerExternalId: string | null;
   enabled: boolean;
 } | null;
 
 export type DashboardData = {
   shop: string;
-  agentToken: string;
+  providerConfigured: boolean;
+  providerError: string | null;
   locations: LocationOption[];
   printers: DashboardPrinter[];
   rule: DashboardRule;
@@ -119,11 +122,6 @@ type OrderPrinterOrder = {
   fulfillmentOrders: {
     nodes: FulfillmentOrderNode[];
   };
-};
-
-type AgentPrinterInput = {
-  name: string;
-  isDefault?: boolean;
 };
 
 const LOCATIONS_QUERY = `#graphql
@@ -212,10 +210,6 @@ const ORDER_QUERY = `#graphql
   }
 `;
 
-function newAgentToken() {
-  return crypto.randomBytes(32).toString("base64url");
-}
-
 function toIso(date: Date | null) {
   return date ? date.toISOString() : null;
 }
@@ -259,28 +253,110 @@ async function graphqlJson<T>(
   return json.data;
 }
 
-export async function ensureAppSettings(shop: string) {
-  const existing = await prisma.appSettings.findUnique({ where: { shop } });
+type PrintNodePrinter = {
+  id: number;
+  name: string;
+  computer?: {
+    name?: string | null;
+  } | null;
+  state?: string | null;
+};
 
-  if (existing) {
-    return existing;
-  }
+type PrintNodeJobResponse = number | { id?: number | string };
 
-  return prisma.appSettings.create({
-    data: {
-      shop,
-      agentToken: newAgentToken(),
-    },
-  });
+function printNodeApiKey() {
+  return process.env.PRINTNODE_API_KEY?.trim() || "";
 }
 
-export async function rotateAgentToken(shop: string) {
-  await ensureAppSettings(shop);
+function printNodeAuthHeader() {
+  return `Basic ${Buffer.from(`${printNodeApiKey()}:`).toString("base64")}`;
+}
 
-  return prisma.appSettings.update({
-    where: { shop },
-    data: { agentToken: newAgentToken() },
+function requirePrintNodeApiKey() {
+  if (!printNodeApiKey()) {
+    throw new Error("PRINTNODE_API_KEY is not configured.");
+  }
+}
+
+function idempotencyKey(parts: string[]) {
+  return crypto.createHash("sha256").update(parts.join("|")).digest("hex");
+}
+
+async function printNodeFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  requirePrintNodeApiKey();
+
+  const response = await fetch(`https://api.printnode.com${path}`, {
+    ...init,
+    headers: {
+      authorization: printNodeAuthHeader(),
+      accept: "application/json",
+      ...(init?.body ? { "content-type": "application/json" } : {}),
+      ...init?.headers,
+    },
   });
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(
+      `PrintNode ${path} failed with ${response.status}: ${text || response.statusText}`,
+    );
+  }
+
+  return (text ? JSON.parse(text) : null) as T;
+}
+
+export async function fetchProviderPrinters(): Promise<DashboardPrinter[]> {
+  const printers = await printNodeFetch<PrintNodePrinter[]>("/printers");
+
+  return printers
+    .filter((printer) => printer.id && printer.name)
+    .map((printer) => ({
+      id: String(printer.id),
+      name: printer.name,
+      computerName: printer.computer?.name || "PrintNode client",
+      state: printer.state || "unknown",
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function submitPdfToPrintNode({
+  printerExternalId,
+  title,
+  pdfBase64,
+  key,
+}: {
+  printerExternalId: string;
+  title: string;
+  pdfBase64: string;
+  key: string;
+}) {
+  const printerId = Number(printerExternalId);
+
+  if (!Number.isInteger(printerId) || printerId <= 0) {
+    throw new Error(`Invalid PrintNode printer id: ${printerExternalId}`);
+  }
+
+  const response = await printNodeFetch<PrintNodeJobResponse>("/printjobs", {
+    method: "POST",
+    headers: {
+      "x-idempotency-key": key,
+    },
+    body: JSON.stringify({
+      printerId,
+      title,
+      contentType: "pdf_base64",
+      content: pdfBase64,
+      source: "COG Order Printer",
+      expireAfter: 600,
+    }),
+  });
+
+  if (typeof response === "number") {
+    return String(response);
+  }
+
+  return response.id ? String(response.id) : null;
 }
 
 export async function fetchLocations(admin: AdminGraphqlClient) {
@@ -296,40 +372,38 @@ export async function loadDashboard(
   admin: AdminGraphqlClient,
   shop: string,
 ): Promise<DashboardData> {
-  const [settings, locations, rule, printers, jobs] = await Promise.all([
-    ensureAppSettings(shop),
+  const [locations, rule, jobs, printerResult] = await Promise.all([
     fetchLocations(admin),
     prisma.printerRule.findFirst({
       where: { shop },
       orderBy: [{ enabled: "desc" }, { updatedAt: "desc" }],
-    }),
-    prisma.registeredPrinter.findMany({
-      where: { shop, active: true },
-      orderBy: [{ isDefault: "desc" }, { name: "asc" }],
     }),
     prisma.printJob.findMany({
       where: { shop },
       orderBy: { createdAt: "desc" },
       take: 20,
     }),
+    fetchProviderPrinters()
+      .then((printers) => ({ printers, error: null }))
+      .catch((error) => ({
+        printers: [] as DashboardPrinter[],
+        error: error instanceof Error ? error.message : "Printer lookup failed.",
+      })),
   ]);
 
   return {
     shop,
-    agentToken: settings.agentToken,
+    providerConfigured: Boolean(printNodeApiKey()),
+    providerError: printerResult.error,
     locations,
-    printers: printers.map((printer) => ({
-      name: printer.name,
-      isDefault: printer.isDefault,
-      agentName: printer.agentName,
-      lastSeenAt: printer.lastSeenAt.toISOString(),
-    })),
+    printers: printerResult.printers,
     rule: rule
       ? {
           id: rule.id,
           locationId: rule.locationId,
           locationName: rule.locationName,
           printerName: rule.printerName,
+          printerExternalId: rule.printerExternalId,
           enabled: rule.enabled,
         }
       : null,
@@ -353,32 +427,33 @@ export async function savePrinterRule(
   formData: FormData,
 ) {
   const locationId = String(formData.get("locationId") || "");
-  const printerName = normalizePrinterName(formData.get("printerName"));
+  const printerExternalId = normalizePrinterName(
+    formData.get("printerExternalId"),
+  );
   const enabled = formData.get("enabled") === "on";
 
   if (!locationId) {
     throw new Error("Choose a fulfillment location.");
   }
 
-  if (!printerName) {
+  if (!printerExternalId) {
     throw new Error("Choose a printer.");
   }
 
-  const [locations, printer] = await Promise.all([
+  const [locations, printers] = await Promise.all([
     fetchLocations(admin),
-    prisma.registeredPrinter.findUnique({
-      where: { shop_name: { shop, name: printerName } },
-    }),
+    fetchProviderPrinters(),
   ]);
 
   const location = locations.find((option) => option.id === locationId);
+  const printer = printers.find((option) => option.id === printerExternalId);
 
   if (!location) {
     throw new Error("That fulfillment location is not available.");
   }
 
-  if (!printer || !printer.active) {
-    throw new Error("That printer has not been registered by the print agent.");
+  if (!printer) {
+    throw new Error("That printer is not available from PrintNode.");
   }
 
   await prisma.$transaction([
@@ -392,14 +467,18 @@ export async function savePrinterRule(
       where: { shop_locationId: { shop, locationId } },
       update: {
         locationName: location.name,
-        printerName,
+        printerName: printer.name,
+        printerProvider: "printnode",
+        printerExternalId: printer.id,
         enabled,
       },
       create: {
         shop,
         locationId,
         locationName: location.name,
-        printerName,
+        printerName: printer.name,
+        printerProvider: "printnode",
+        printerExternalId: printer.id,
         enabled,
       },
     }),
@@ -407,24 +486,80 @@ export async function savePrinterRule(
 }
 
 export async function retryPrintJob(shop: string, jobId: string) {
-  const job = await prisma.printJob.update({
+  const job = await prisma.printJob.findUnique({
     where: { id: jobId, shop },
+  });
+
+  if (!job) {
+    throw new Error("Print job was not found.");
+  }
+
+  if (!job.printerExternalId || !job.pdfBase64) {
+    throw new Error("Print job does not have enough provider data to retry.");
+  }
+
+  await prisma.printJob.update({
+    where: { id: job.id },
     data: {
-      status: "QUEUED",
+      status: "PRINTING",
       lastError: null,
-      claimedAt: null,
+      claimedAt: new Date(),
       printedAt: null,
+      attempts: { increment: 1 },
       events: {
         create: {
           shop,
-          status: "QUEUED",
-          message: "Manually queued for retry.",
+          status: "PRINTING",
+          message: "Manual retry submitted to PrintNode.",
         },
       },
     },
   });
 
-  return job;
+  try {
+    const providerJobId = await submitPdfToPrintNode({
+      printerExternalId: job.printerExternalId,
+      title: `Packing slip ${job.orderName}`,
+      pdfBase64: job.pdfBase64,
+      key: idempotencyKey([shop, job.orderId, job.locationId, String(Date.now())]),
+    });
+
+    return prisma.printJob.update({
+      where: { id: job.id },
+      data: {
+        status: "SUBMITTED",
+        providerJobId,
+        lastError: null,
+        events: {
+          create: {
+            shop,
+            status: "SUBMITTED",
+            message: providerJobId
+              ? `PrintNode accepted retry job ${providerJobId}.`
+              : "PrintNode accepted retry job.",
+          },
+        },
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Print provider submission failed.";
+
+    return prisma.printJob.update({
+      where: { id: job.id },
+      data: {
+        status: "FAILED",
+        lastError: message,
+        events: {
+          create: {
+            shop,
+            status: "FAILED",
+            message,
+          },
+        },
+      },
+    });
+  }
 }
 
 export function orderGidFromWebhookPayload(payload: unknown) {
@@ -631,6 +766,99 @@ function renderPackingSlipHtml({
 </html>`;
 }
 
+async function renderPackingSlipPdfBase64({
+  order,
+  locationName,
+  lines,
+}: {
+  order: OrderPrinterOrder;
+  locationName: string;
+  lines: PackingSlipLine[];
+}) {
+  return new Promise<string>((resolve, reject) => {
+    const doc = new PDFDocument({ size: "LETTER", margin: 36 });
+    const chunks: Buffer[] = [];
+    const shipTo = addressLines(order.shippingAddress);
+    const createdAt = new Date(order.createdAt).toLocaleString("en-CA", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+
+    doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+    doc.on("error", reject);
+    doc.on("end", () => resolve(Buffer.concat(chunks).toString("base64")));
+
+    doc.fontSize(24).font("Helvetica-Bold").text("Packing slip", 36, 36);
+    doc
+      .fontSize(10)
+      .font("Helvetica")
+      .text("Canadian Off Grid Depot", 36, 66);
+    doc
+      .fontSize(14)
+      .font("Helvetica-Bold")
+      .text(order.name, 360, 36, { align: "right", width: 216 });
+    doc
+      .fontSize(10)
+      .font("Helvetica")
+      .text(createdAt, 360, 56, { align: "right", width: 216 })
+      .text(locationName, 360, 72, { align: "right", width: 216 });
+
+    doc.moveTo(36, 96).lineTo(576, 96).lineWidth(1.5).stroke("#111827");
+
+    doc.fontSize(10).font("Helvetica-Bold").text("SHIP TO", 36, 118);
+    doc.font("Helvetica");
+    const addressText = shipTo.length
+      ? shipTo.join("\n")
+      : "No shipping address on order.";
+    doc.text(addressText, 36, 136, { width: 240, lineGap: 3 });
+
+    doc.font("Helvetica-Bold").text("ORDER NOTES", 330, 118);
+    doc
+      .font("Helvetica")
+      .text(order.note || "No notes.", 330, 136, { width: 246, lineGap: 3 });
+
+    let y = 230;
+    doc.moveTo(36, y).lineTo(576, y).stroke("#111827");
+    y += 12;
+    doc.font("Helvetica-Bold").fontSize(10).text("QTY", 36, y);
+    doc.text("ITEM", 92, y);
+    y += 20;
+    doc.moveTo(36, y - 6).lineTo(576, y - 6).stroke("#d1d5db");
+
+    for (const line of lines) {
+      if (y > 720) {
+        doc.addPage();
+        y = 54;
+      }
+
+      doc.font("Helvetica-Bold").fontSize(16).text(String(line.quantity), 36, y, {
+        width: 36,
+        align: "center",
+      });
+      doc.fontSize(11).text(lineTitle(line), 92, y, { width: 460 });
+
+      if (line.sku) {
+        doc
+          .font("Helvetica")
+          .fontSize(9)
+          .fillColor("#4b5563")
+          .text(`SKU: ${line.sku}`, 92, y + 16, { width: 460 })
+          .fillColor("#111827");
+      }
+
+      y += line.sku ? 42 : 30;
+      doc.moveTo(36, y - 8).lineTo(576, y - 8).stroke("#e5e7eb");
+    }
+
+    doc
+      .font("Helvetica")
+      .fontSize(8)
+      .fillColor("#6b7280")
+      .text("Generated automatically by COG Order Printer.", 36, 742);
+    doc.end();
+  });
+}
+
 function fulfillmentLineToPackingLine(line: FulfillmentOrderLineItem) {
   const orderLine = line.lineItem;
   const quantity =
@@ -673,6 +901,13 @@ export async function createPrintJobForOrder(
     return { created: false, reason: "No enabled printer rule." };
   }
 
+  if (!rule.printerExternalId) {
+    return {
+      created: false,
+      reason: "The printer rule is missing its PrintNode printer id.",
+    };
+  }
+
   const data = await graphqlJson<{ order: OrderPrinterOrder | null }>(
     admin,
     ORDER_QUERY,
@@ -706,6 +941,11 @@ export async function createPrintJobForOrder(
     locationName: rule.locationName,
     lines: printableLines.filter((line) => line.quantity > 0),
   });
+  const pdfBase64 = await renderPackingSlipPdfBase64({
+    order: data.order,
+    locationName: rule.locationName,
+    lines: printableLines.filter((line) => line.quantity > 0),
+  });
 
   try {
     const job = await prisma.printJob.create({
@@ -717,18 +957,90 @@ export async function createPrintJobForOrder(
         locationId: rule.locationId,
         locationName: rule.locationName,
         printerName: rule.printerName,
+        printerProvider: rule.printerProvider,
+        printerExternalId: rule.printerExternalId,
         html,
+        pdfBase64,
         events: {
           create: {
             shop,
             status: "QUEUED",
-            message: `Queued for ${rule.printerName}.`,
+            message: `Preparing provider submission for ${rule.printerName}.`,
           },
         },
       },
     });
 
-    return { created: true, jobId: job.id, reason: "Queued." };
+    await prisma.printJob.update({
+      where: { id: job.id },
+      data: {
+        status: "PRINTING",
+        attempts: { increment: 1 },
+        claimedAt: new Date(),
+        events: {
+          create: {
+            shop,
+            status: "PRINTING",
+            message: "Submitting directly to PrintNode.",
+          },
+        },
+      },
+    });
+
+    try {
+      const providerJobId = await submitPdfToPrintNode({
+        printerExternalId: rule.printerExternalId,
+        title: `Packing slip ${data.order.name}`,
+        pdfBase64,
+        key: idempotencyKey([shop, data.order.id, rule.locationId]),
+      });
+
+      await prisma.printJob.update({
+        where: { id: job.id },
+        data: {
+          status: "SUBMITTED",
+          providerJobId,
+          lastError: null,
+          events: {
+            create: {
+              shop,
+              status: "SUBMITTED",
+              message: providerJobId
+                ? `PrintNode accepted job ${providerJobId}.`
+                : "PrintNode accepted job.",
+            },
+          },
+        },
+      });
+
+      return {
+        created: true,
+        jobId: job.id,
+        reason: "Submitted to PrintNode.",
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Print provider submission failed.";
+
+      await prisma.printJob.update({
+        where: { id: job.id },
+        data: {
+          status: "FAILED",
+          lastError: message,
+          events: {
+            create: {
+              shop,
+              status: "FAILED",
+              message,
+            },
+          },
+        },
+      });
+
+      return { created: true, jobId: job.id, reason: message };
+    }
   } catch (error) {
     const prismaError = error as Prisma.PrismaClientKnownRequestError;
 
@@ -741,165 +1053,4 @@ export async function createPrintJobForOrder(
 
     throw error;
   }
-}
-
-export async function authenticateAgentToken(request: Request) {
-  const authorization = request.headers.get("authorization") || "";
-  const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
-  const token = bearer || new URL(request.url).searchParams.get("token") || "";
-
-  if (!token) {
-    return null;
-  }
-
-  return prisma.appSettings.findUnique({
-    where: { agentToken: token },
-  });
-}
-
-export async function registerAgentPrinters({
-  shop,
-  agentName,
-  printers,
-}: {
-  shop: string;
-  agentName: string;
-  printers: AgentPrinterInput[];
-}) {
-  const now = new Date();
-  const normalized = printers
-    .map((printer) => ({
-      name: normalizePrinterName(printer.name),
-      isDefault: Boolean(printer.isDefault),
-    }))
-    .filter((printer) => printer.name);
-
-  await prisma.registeredPrinter.updateMany({
-    where: { shop },
-    data: { active: false },
-  });
-
-  await prisma.$transaction(
-    normalized.map((printer) =>
-      prisma.registeredPrinter.upsert({
-        where: { shop_name: { shop, name: printer.name } },
-        update: {
-          active: true,
-          isDefault: printer.isDefault,
-          agentName,
-          lastSeenAt: now,
-        },
-        create: {
-          shop,
-          name: printer.name,
-          isDefault: printer.isDefault,
-          agentName,
-          lastSeenAt: now,
-        },
-      }),
-    ),
-  );
-
-  return normalized.length;
-}
-
-export async function claimPrintJobs(shop: string, agentName: string) {
-  const staleClaimedAt = new Date(Date.now() - 10 * 60 * 1000);
-
-  await prisma.printJob.updateMany({
-    where: {
-      shop,
-      status: "PRINTING",
-      claimedAt: { lt: staleClaimedAt },
-    },
-    data: {
-      status: "QUEUED",
-      lastError: "The print agent did not report completion in time.",
-      claimedAt: null,
-    },
-  });
-
-  const activePrinters = await prisma.registeredPrinter.findMany({
-    where: { shop, active: true },
-    select: { name: true },
-  });
-  const printerNames = activePrinters.map((printer) => printer.name);
-
-  if (!printerNames.length) {
-    return [];
-  }
-
-  const queued = await prisma.printJob.findMany({
-    where: {
-      shop,
-      status: "QUEUED",
-      printerName: { in: printerNames },
-    },
-    orderBy: { createdAt: "asc" },
-    take: 5,
-  });
-
-  const claimed = [];
-
-  for (const job of queued) {
-    const updated = await prisma.printJob.updateMany({
-      where: { id: job.id, status: "QUEUED" },
-      data: {
-        status: "PRINTING",
-        attempts: { increment: 1 },
-        claimedAt: new Date(),
-        lastError: null,
-      },
-    });
-
-    if (updated.count === 1) {
-      await prisma.printEvent.create({
-        data: {
-          shop,
-          jobId: job.id,
-          status: "PRINTING",
-          message: `Claimed by ${agentName}.`,
-        },
-      });
-
-      claimed.push({
-        id: job.id,
-        orderName: job.orderName,
-        printerName: job.printerName,
-        html: job.html,
-      });
-    }
-  }
-
-  return claimed;
-}
-
-export async function completePrintJob({
-  shop,
-  jobId,
-  printed,
-  message,
-}: {
-  shop: string;
-  jobId: string;
-  printed: boolean;
-  message: string | null;
-}) {
-  const status = printed ? "PRINTED" : "FAILED";
-
-  return prisma.printJob.update({
-    where: { id: jobId, shop },
-    data: {
-      status,
-      printedAt: printed ? new Date() : null,
-      lastError: printed ? null : message || "Print failed.",
-      events: {
-        create: {
-          shop,
-          status,
-          message,
-        },
-      },
-    },
-  });
 }
