@@ -39,6 +39,7 @@
 
 .settings-form select,
 .settings-form button,
+.agent-grid button,
 .job-table button {
   border: 1px solid #9ca3af;
   border-radius: 6px;
@@ -48,6 +49,7 @@
 }
 
 .settings-form button,
+.agent-grid button,
 .job-table button {
   background: #111827;
   color: white;
@@ -56,6 +58,7 @@
 }
 
 .settings-form button:disabled,
+.agent-grid button:disabled,
 .job-table button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -77,6 +80,29 @@
 .empty-state {
   color: #6b7280;
   margin: 12px 0 0;
+}
+
+.agent-grid {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  margin-bottom: 14px;
+}
+
+.token,
+.command {
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  color: #111827;
+  display: block;
+  overflow-wrap: anywhere;
+  padding: 10px;
+}
+
+.command {
+  margin-top: 6px;
 }
 
 .printer-list {
@@ -166,6 +192,7 @@
 
 @media (max-width: 760px) {
   .settings-form,
+  .agent-grid,
   .printer-row {
     grid-template-columns: 1fr;
   }

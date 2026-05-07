@@ -34,13 +34,21 @@ model Session {
   refreshTokenExpires DateTime?
 }
 
+model AppSettings {
+  id         String   @id @default(cuid())
+  shop       String   @unique
+  agentToken String   @unique
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
 model PrinterRule {
   id                String   @id @default(cuid())
   shop              String
   locationId        String
   locationName      String
   printerName       String
-  printerProvider   String   @default("printnode")
+  printerProvider   String   @default("local-agent")
   printerExternalId String?
   enabled           Boolean  @default(true)
   createdAt         DateTime @default(now())
@@ -48,6 +56,21 @@ model PrinterRule {
 
   @@unique([shop, locationId])
   @@index([shop, enabled])
+}
+
+model RegisteredPrinter {
+  id         String   @id @default(cuid())
+  shop       String
+  name       String
+  isDefault  Boolean  @default(false)
+  active     Boolean  @default(true)
+  agentName  String?
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([shop, name])
+  @@index([shop, active])
 }
 
 model PrintJob {
@@ -59,7 +82,7 @@ model PrintJob {
   locationId     String
   locationName   String
   printerName    String
-  printerProvider String        @default("printnode")
+  printerProvider String        @default("local-agent")
   printerExternalId String?
   providerJobId  String?
   status         PrintJobStatus @default(QUEUED)

@@ -15,6 +15,7 @@ import { authenticate } from "../shopify.server";
 import {
   loadDashboard,
   retryPrintJob,
+  rotateAgentToken,
   savePrinterRule,
 } from "../models/order-printer.server";
 
@@ -46,12 +47,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { ok: true, message: "Printer rule saved." } satisfies ActionData;
     }
 
-    if (intent === "retry-job") {
-      await retryPrintJob(session.shop, String(formData.get("jobId") || ""));
+    if (intent === "rotate-token") {
+      await rotateAgentToken(session.shop);
       return {
         ok: true,
-        message: "Print job submitted again.",
+        message: "Print agent token rotated.",
       } satisfies ActionData;
+    }
+
+    if (intent === "retry-job") {
+      await retryPrintJob(session.shop, String(formData.get("jobId") || ""));
+      return { ok: true, message: "Print job queued again." } satisfies ActionData;
     }
 
     return { ok: false, message: "Unknown action." } satisfies ActionData;
@@ -80,9 +86,9 @@ export default function OrderPrinterDashboard() {
   const navigation = useNavigation();
   const saving = navigation.state === "submitting";
   const defaultLocationId = data.rule?.locationId || data.locations[0]?.id || "";
-  const defaultPrinterId =
-    data.rule?.printerExternalId || data.printers[0]?.id || "";
-  const canSave = Boolean(defaultLocationId && defaultPrinterId);
+  const defaultPrinterName = data.rule?.printerName || data.printers[0]?.name || "";
+  const canSave = Boolean(defaultLocationId && defaultPrinterName);
+  const agentCommand = `SHOPIFY_PRINTER_AGENT_URL=${data.appUrl} SHOPIFY_PRINTER_AGENT_TOKEN=${data.agentToken} npm run agent`;
 
   return (
     <s-page heading="COG Order Printer">
@@ -94,14 +100,6 @@ export default function OrderPrinterDashboard() {
         ) : null}
 
         <s-section heading="Automation rule">
-          {!data.providerConfigured ? (
-            <p className="empty-state">
-              PRINTNODE_API_KEY is not configured in Vercel yet.
-            </p>
-          ) : null}
-          {data.providerError ? (
-            <p className="empty-state">{data.providerError}</p>
-          ) : null}
           <Form method="post" className="settings-form">
             <input type="hidden" name="intent" value="save-rule" />
             <label>
@@ -116,10 +114,11 @@ export default function OrderPrinterDashboard() {
             </label>
             <label>
               <span>Printer</span>
-              <select name="printerExternalId" defaultValue={defaultPrinterId}>
+              <select name="printerName" defaultValue={defaultPrinterName}>
                 {data.printers.map((printer) => (
-                  <option key={printer.id} value={printer.id}>
-                    {printer.name} - {printer.computerName}
+                  <option key={printer.name} value={printer.name}>
+                    {printer.name}
+                    {printer.isDefault ? " (default)" : ""}
                   </option>
                 ))}
               </select>
@@ -138,18 +137,33 @@ export default function OrderPrinterDashboard() {
           </Form>
           {!data.printers.length ? (
             <p className="empty-state">
-              No PrintNode printers are available for this API key.
+              No printers have checked in yet. Start the local print agent, then
+              reload this page.
             </p>
           ) : null}
         </s-section>
 
-        <s-section heading="Provider printers">
+        <s-section heading="Print agent">
+          <div className="agent-grid">
+            <div>
+              <div className="field-label">Agent token</div>
+              <code className="token">{data.agentToken}</code>
+            </div>
+            <Form method="post">
+              <input type="hidden" name="intent" value="rotate-token" />
+              <button type="submit" disabled={saving}>
+                Rotate token
+              </button>
+            </Form>
+          </div>
+          <div className="field-label">Start command</div>
+          <code className="command">{agentCommand}</code>
           <div className="printer-list">
             {data.printers.map((printer) => (
-              <div className="printer-row" key={printer.id}>
+              <div className="printer-row" key={printer.name}>
                 <strong>{printer.name}</strong>
-                <span>{printer.computerName}</span>
-                <span>{printer.state}</span>
+                <span>{printer.agentName || "local agent"}</span>
+                <span>Last seen {formatDate(printer.lastSeenAt)}</span>
               </div>
             ))}
           </div>
