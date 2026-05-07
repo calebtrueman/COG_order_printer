@@ -215,6 +215,11 @@ Before installing, you can test in the foreground:
 .\\run-console.ps1
 
 Logs are written to the logs folder next to the service executable.
+
+The service starts automatically after reboot. When it starts or detects a long
+sleep/lid-close gap, it asks the app to reconcile open Shopify orders created
+since the latest automatic print, queues any missed packing slips, then prints
+the queued jobs.
 `,
   );
 
@@ -234,7 +239,12 @@ SumatraPDF
 `,
   );
 
-  const pdfToPrinterLicense = join(rootDir, "node_modules", "pdf-to-printer", "LICENSE");
+  const pdfToPrinterLicense = join(
+    rootDir,
+    "node_modules",
+    "pdf-to-printer",
+    "LICENSE",
+  );
   if (existsSync(pdfToPrinterLicense)) {
     await writeFile(
       join(outDir, "PDF-TO-PRINTER-LICENSE.txt"),

@@ -50,6 +50,8 @@ export type DashboardData = {
   printers: DashboardPrinter[];
   rule: DashboardRule;
   jobs: DashboardJob[];
+  template: DashboardTemplate;
+  reprintOrders: ReprintOrder[];
 };
 
 type Address = {
@@ -64,11 +66,29 @@ type Address = {
   phone?: string | null;
 };
 
+type ImageValue = {
+  url: string | null;
+  altText: string | null;
+} | null;
+
+type TrackingInfo = {
+  company: string | null;
+  number: string | null;
+  url: string | null;
+};
+
+type ShippingLine = {
+  title: string | null;
+  code: string | null;
+};
+
 type PackingSlipLine = {
   title: string;
   variantTitle: string | null;
   sku: string | null;
   quantity: number;
+  imageUrl: string | null;
+  imageAlt: string | null;
 };
 
 type FulfillmentOrderLineItem = {
@@ -80,6 +100,7 @@ type FulfillmentOrderLineItem = {
     sku: string | null;
     variantTitle: string | null;
     quantity: number | null;
+    image: ImageValue;
   } | null;
 };
 
@@ -99,10 +120,20 @@ type OrderPrinterOrder = {
   id: string;
   name: string;
   createdAt: string;
+  poNumber: string | null;
+  displayFulfillmentStatus: string | null;
   email: string | null;
   phone: string | null;
   note: string | null;
   shippingAddress: Address | null;
+  billingAddress: Address | null;
+  shippingLines: {
+    nodes: ShippingLine[];
+  };
+  fulfillments: {
+    createdAt: string | null;
+    trackingInfo: TrackingInfo[];
+  }[];
   lineItems: {
     nodes: {
       title: string | null;
@@ -110,6 +141,7 @@ type OrderPrinterOrder = {
       sku: string | null;
       variantTitle: string | null;
       quantity: number | null;
+      image: ImageValue;
     }[];
   };
   fulfillmentOrders: {
@@ -117,9 +149,53 @@ type OrderPrinterOrder = {
   };
 };
 
-type RecentOrderNode = {
+type OrderListNode = {
   id: string;
   name: string;
+  createdAt: string;
+  displayFulfillmentStatus: string | null;
+  shippingAddress: Address | null;
+  fulfillmentOrders: {
+    nodes: FulfillmentOrderNode[];
+  };
+};
+
+export type ReprintOrder = {
+  id: string;
+  name: string;
+  createdAt: string;
+  status: string;
+  shipTo: string;
+  fulfillmentOrderCount: number;
+};
+
+export type TemplateBlockType = "field" | "text" | "image" | "items";
+
+export type TemplateBlock = {
+  id: string;
+  type: TemplateBlockType;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  field?: string;
+  text?: string;
+  imageUrl?: string;
+  label?: string;
+  fontSize?: number;
+  fontWeight?: string;
+  align?: "left" | "center" | "right";
+};
+
+export type TemplateDesign = {
+  version: 1;
+  page: { width: number; height: number };
+  blocks: TemplateBlock[];
+};
+
+type DashboardTemplate = {
+  name: string;
+  design: TemplateDesign;
 };
 
 type OrderPrinterFulfillmentOrder = {
@@ -141,6 +217,133 @@ type AgentPrinterInput = {
 };
 
 const LOCAL_AGENT_PROVIDER = "local-agent";
+const TEMPLATE_PAGE = { width: 816, height: 1056 };
+const TEMPLATE_STORAGE_PREFIX = "packing-template:";
+
+const DEFAULT_TEMPLATE_DESIGN: TemplateDesign = {
+  version: 1,
+  page: TEMPLATE_PAGE,
+  blocks: [
+    {
+      id: "title",
+      type: "text",
+      x: 36,
+      y: 34,
+      w: 310,
+      h: 42,
+      text: "Packing slip",
+      fontSize: 30,
+      fontWeight: "700",
+      align: "left",
+    },
+    {
+      id: "order-name",
+      type: "field",
+      x: 540,
+      y: 36,
+      w: 238,
+      h: 28,
+      field: "order.name",
+      label: "Order #",
+      fontSize: 18,
+      fontWeight: "700",
+      align: "right",
+    },
+    {
+      id: "order-date",
+      type: "field",
+      x: 540,
+      y: 70,
+      w: 238,
+      h: 22,
+      field: "order.createdAt",
+      label: "Order date",
+      fontSize: 12,
+      align: "right",
+    },
+    {
+      id: "ship-to",
+      type: "field",
+      x: 36,
+      y: 126,
+      w: 320,
+      h: 150,
+      field: "shipping.address",
+      label: "Ship to",
+      fontSize: 12,
+      align: "left",
+    },
+    {
+      id: "bill-to",
+      type: "field",
+      x: 394,
+      y: 126,
+      w: 320,
+      h: 150,
+      field: "billing.address",
+      label: "Bill to",
+      fontSize: 12,
+      align: "left",
+    },
+    {
+      id: "ship-via",
+      type: "field",
+      x: 36,
+      y: 298,
+      w: 220,
+      h: 42,
+      field: "shipping.method",
+      label: "Ship via",
+      fontSize: 12,
+      align: "left",
+    },
+    {
+      id: "po-number",
+      type: "field",
+      x: 286,
+      y: 298,
+      w: 200,
+      h: 42,
+      field: "order.poNumber",
+      label: "PO #",
+      fontSize: 12,
+      align: "left",
+    },
+    {
+      id: "tracking-number",
+      type: "field",
+      x: 516,
+      y: 298,
+      w: 220,
+      h: 42,
+      field: "fulfillment.trackingNumber",
+      label: "Tracking #",
+      fontSize: 12,
+      align: "left",
+    },
+    {
+      id: "items",
+      type: "items",
+      x: 36,
+      y: 372,
+      w: 744,
+      h: 520,
+      fontSize: 12,
+      align: "left",
+    },
+    {
+      id: "footer",
+      type: "text",
+      x: 36,
+      y: 948,
+      w: 744,
+      h: 34,
+      text: "Generated automatically by COG Order Printer.",
+      fontSize: 11,
+      align: "left",
+    },
+  ],
+};
 
 const LOCATIONS_QUERY = `#graphql
   query OrderPrinterLocations {
@@ -161,6 +364,8 @@ const ORDER_QUERY = `#graphql
       id
       name
       createdAt
+      poNumber
+      displayFulfillmentStatus
       email
       phone
       note
@@ -175,6 +380,31 @@ const ORDER_QUERY = `#graphql
         country
         phone
       }
+      billingAddress {
+        name
+        company
+        address1
+        address2
+        city
+        provinceCode
+        zip
+        country
+        phone
+      }
+      shippingLines(first: 5) {
+        nodes {
+          title
+          code
+        }
+      }
+      fulfillments(first: 10) {
+        createdAt
+        trackingInfo(first: 10) {
+          company
+          number
+          url
+        }
+      }
       lineItems(first: 100) {
         nodes {
           title
@@ -182,6 +412,10 @@ const ORDER_QUERY = `#graphql
           sku
           variantTitle
           quantity
+          image {
+            url
+            altText
+          }
         }
       }
       fulfillmentOrders(first: 25) {
@@ -205,6 +439,10 @@ const ORDER_QUERY = `#graphql
                 sku
                 variantTitle
                 quantity
+                image {
+                  url
+                  altText
+                }
               }
             }
           }
@@ -214,12 +452,50 @@ const ORDER_QUERY = `#graphql
   }
 `;
 
-const RECENT_ORDERS_QUERY = `#graphql
-  query OrderPrinterRecentOrders($first: Int!) {
-    orders(first: $first, sortKey: CREATED_AT, reverse: true) {
+const ORDER_LIST_QUERY = `#graphql
+  query OrderPrinterOrderList($first: Int!, $query: String, $reverse: Boolean!) {
+    orders(first: $first, sortKey: CREATED_AT, reverse: $reverse, query: $query) {
       nodes {
         id
         name
+        createdAt
+        displayFulfillmentStatus
+        shippingAddress {
+          name
+          company
+          city
+          provinceCode
+        }
+        fulfillmentOrders(first: 25) {
+          nodes {
+            id
+            status
+            assignedLocation {
+              name
+              location {
+                id
+                name
+              }
+            }
+            lineItems(first: 100) {
+              nodes {
+                totalQuantity
+                remainingQuantity
+                lineItem {
+                  title
+                  name
+                  sku
+                  variantTitle
+                  quantity
+                  image {
+                    url
+                    altText
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -270,6 +546,106 @@ function normalizePrinterName(value: unknown) {
   return value.trim().slice(0, 240);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function boundedNumber(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+) {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function normalizedAlign(value: unknown): "left" | "center" | "right" {
+  return value === "center" || value === "right" ? value : "left";
+}
+
+function normalizedTemplateBlock(value: unknown): TemplateBlock | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const type = value.type;
+  if (
+    type !== "field" &&
+    type !== "text" &&
+    type !== "image" &&
+    type !== "items"
+  ) {
+    return null;
+  }
+
+  const id =
+    typeof value.id === "string" && value.id.trim()
+      ? value.id.trim().slice(0, 80)
+      : crypto.randomUUID();
+
+  return {
+    id,
+    type,
+    x: boundedNumber(value.x, 36, 0, TEMPLATE_PAGE.width),
+    y: boundedNumber(value.y, 36, 0, TEMPLATE_PAGE.height),
+    w: boundedNumber(value.w, 180, 24, TEMPLATE_PAGE.width),
+    h: boundedNumber(value.h, 48, 18, TEMPLATE_PAGE.height),
+    field:
+      typeof value.field === "string" ? value.field.trim().slice(0, 120) : "",
+    text: typeof value.text === "string" ? value.text.slice(0, 2000) : "",
+    imageUrl:
+      typeof value.imageUrl === "string"
+        ? value.imageUrl.trim().slice(0, 2000)
+        : "",
+    label:
+      typeof value.label === "string" ? value.label.trim().slice(0, 120) : "",
+    fontSize: boundedNumber(value.fontSize, 12, 8, 72),
+    fontWeight: value.fontWeight === "700" ? "700" : "400",
+    align: normalizedAlign(value.align),
+  };
+}
+
+function normalizeTemplateDesign(value: unknown): TemplateDesign {
+  if (!isRecord(value)) {
+    return DEFAULT_TEMPLATE_DESIGN;
+  }
+
+  const blocks = Array.isArray(value.blocks)
+    ? value.blocks
+        .map(normalizedTemplateBlock)
+        .filter((block): block is TemplateBlock => Boolean(block))
+        .slice(0, 80)
+    : [];
+
+  if (!blocks.length) {
+    return DEFAULT_TEMPLATE_DESIGN;
+  }
+
+  return {
+    version: 1,
+    page: TEMPLATE_PAGE,
+    blocks,
+  };
+}
+
+function parseTemplateDesignJson(value: unknown) {
+  if (typeof value !== "string") {
+    return DEFAULT_TEMPLATE_DESIGN;
+  }
+
+  try {
+    return normalizeTemplateDesign(JSON.parse(value));
+  } catch {
+    throw new Error("Template design JSON is invalid.");
+  }
+}
+
 async function graphqlJson<T>(
   admin: AdminGraphqlClient,
   query: string,
@@ -307,6 +683,67 @@ export async function ensureAppSettings(shop: string) {
   });
 }
 
+function templateFromRule(rule: { printerExternalId: string | null } | null) {
+  const raw = rule?.printerExternalId || "";
+
+  if (!raw.startsWith(TEMPLATE_STORAGE_PREFIX)) {
+    return {
+      name: "Default packing slip",
+      design: DEFAULT_TEMPLATE_DESIGN,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(raw.slice(TEMPLATE_STORAGE_PREFIX.length));
+
+    return {
+      name:
+        isRecord(parsed) &&
+        typeof parsed.name === "string" &&
+        parsed.name.trim()
+          ? parsed.name.trim().slice(0, 120)
+          : "Default packing slip",
+      design: normalizeTemplateDesign(
+        isRecord(parsed) ? parsed.design : DEFAULT_TEMPLATE_DESIGN,
+      ),
+    };
+  } catch {
+    return {
+      name: "Default packing slip",
+      design: DEFAULT_TEMPLATE_DESIGN,
+    };
+  }
+}
+
+export async function savePrintTemplate(shop: string, formData: FormData) {
+  const name = String(formData.get("templateName") || "Default packing slip")
+    .trim()
+    .slice(0, 120);
+  const design = parseTemplateDesignJson(formData.get("templateDesign"));
+  const rule = await prisma.printerRule.findFirst({
+    where: { shop, printerProvider: LOCAL_AGENT_PROVIDER },
+    orderBy: [{ enabled: "desc" }, { updatedAt: "desc" }],
+  });
+
+  if (!rule) {
+    throw new Error(
+      "Save the fulfillment location and printer before saving a template.",
+    );
+  }
+
+  await prisma.printerRule.update({
+    where: { id: rule.id },
+    data: {
+      printerExternalId:
+        TEMPLATE_STORAGE_PREFIX +
+        JSON.stringify({
+          name: name || "Default packing slip",
+          design,
+        }),
+    },
+  });
+}
+
 export async function rotateAgentToken(shop: string) {
   await ensureAppSettings(shop);
 
@@ -328,24 +765,29 @@ export async function fetchLocations(admin: AdminGraphqlClient) {
 export async function loadDashboard(
   admin: AdminGraphqlClient,
   shop: string,
+  options: { includeReprintOrders?: boolean } = {},
 ): Promise<DashboardData> {
-  const [settings, locations, rule, printers, jobs] = await Promise.all([
-    ensureAppSettings(shop),
-    fetchLocations(admin),
-    prisma.printerRule.findFirst({
-      where: { shop, printerProvider: LOCAL_AGENT_PROVIDER },
-      orderBy: [{ enabled: "desc" }, { updatedAt: "desc" }],
-    }),
-    prisma.registeredPrinter.findMany({
-      where: { shop, active: true },
-      orderBy: [{ isDefault: "desc" }, { name: "asc" }],
-    }),
-    prisma.printJob.findMany({
-      where: { shop },
-      orderBy: { createdAt: "desc" },
-      take: 20,
-    }),
-  ]);
+  const [settings, locations, rule, printers, jobs, reprintOrders] =
+    await Promise.all([
+      ensureAppSettings(shop),
+      fetchLocations(admin),
+      prisma.printerRule.findFirst({
+        where: { shop, printerProvider: LOCAL_AGENT_PROVIDER },
+        orderBy: [{ enabled: "desc" }, { updatedAt: "desc" }],
+      }),
+      prisma.registeredPrinter.findMany({
+        where: { shop, active: true },
+        orderBy: [{ isDefault: "desc" }, { name: "asc" }],
+      }),
+      prisma.printJob.findMany({
+        where: { shop },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      }),
+      options.includeReprintOrders
+        ? listReprintableOrders(admin, shop)
+        : Promise.resolve([]),
+    ]);
 
   return {
     shop,
@@ -377,6 +819,8 @@ export async function loadDashboard(
       createdAt: job.createdAt.toISOString(),
       printedAt: toIso(job.printedAt),
     })),
+    template: templateFromRule(rule),
+    reprintOrders,
   };
 }
 
@@ -397,10 +841,14 @@ export async function savePrinterRule(
     throw new Error("Choose a printer.");
   }
 
-  const [locations, printer] = await Promise.all([
+  const [locations, printer, existingRule] = await Promise.all([
     fetchLocations(admin),
     prisma.registeredPrinter.findUnique({
       where: { shop_name: { shop, name: printerName } },
+    }),
+    prisma.printerRule.findFirst({
+      where: { shop, printerProvider: LOCAL_AGENT_PROVIDER },
+      orderBy: [{ enabled: "desc" }, { updatedAt: "desc" }],
     }),
   ]);
 
@@ -413,6 +861,12 @@ export async function savePrinterRule(
   if (!printer || !printer.active) {
     throw new Error("That printer has not been registered by the print agent.");
   }
+
+  const templateStorage = existingRule?.printerExternalId?.startsWith(
+    TEMPLATE_STORAGE_PREFIX,
+  )
+    ? existingRule.printerExternalId
+    : null;
 
   await prisma.$transaction([
     prisma.printerRule.deleteMany({
@@ -427,7 +881,6 @@ export async function savePrinterRule(
         locationName: location.name,
         printerName,
         printerProvider: LOCAL_AGENT_PROVIDER,
-        printerExternalId: null,
         enabled,
       },
       create: {
@@ -436,11 +889,166 @@ export async function savePrinterRule(
         locationName: location.name,
         printerName,
         printerProvider: LOCAL_AGENT_PROVIDER,
-        printerExternalId: null,
+        printerExternalId: templateStorage,
         enabled,
       },
     }),
   ]);
+}
+
+function isOpenFulfillmentOrder(fulfillmentOrder: FulfillmentOrderNode) {
+  const status = fulfillmentOrder.status.toUpperCase();
+
+  return status !== "CLOSED" && status !== "CANCELLED";
+}
+
+function fulfillmentOrderHasRemainingItems(
+  fulfillmentOrder: FulfillmentOrderNode,
+) {
+  return fulfillmentOrder.lineItems.nodes.some((line) => {
+    const quantity =
+      line.remainingQuantity ??
+      line.totalQuantity ??
+      line.lineItem?.quantity ??
+      0;
+
+    return quantity > 0;
+  });
+}
+
+function matchingOpenFulfillmentOrders(
+  order: Pick<OrderPrinterOrder | OrderListNode, "fulfillmentOrders">,
+  locationId: string,
+) {
+  return order.fulfillmentOrders.nodes.filter(
+    (fulfillmentOrder) =>
+      fulfillmentOrder.assignedLocation?.location?.id === locationId &&
+      isOpenFulfillmentOrder(fulfillmentOrder) &&
+      fulfillmentOrderHasRemainingItems(fulfillmentOrder),
+  );
+}
+
+function reprintOrderSummary(
+  order: OrderListNode,
+  matchingOrders: FulfillmentOrderNode[],
+): ReprintOrder {
+  const shipTo = [
+    order.shippingAddress?.name || order.shippingAddress?.company,
+    [order.shippingAddress?.city, order.shippingAddress?.provinceCode]
+      .filter(Boolean)
+      .join(", "),
+  ]
+    .filter(Boolean)
+    .join(" - ");
+
+  return {
+    id: order.id,
+    name: order.name,
+    createdAt: order.createdAt,
+    status: order.displayFulfillmentStatus || "UNFULFILLED",
+    shipTo: shipTo || "No shipping address",
+    fulfillmentOrderCount: matchingOrders.length,
+  };
+}
+
+async function getEnabledRule(shop: string) {
+  return prisma.printerRule.findFirst({
+    where: { shop, enabled: true, printerProvider: LOCAL_AGENT_PROVIDER },
+    orderBy: { updatedAt: "desc" },
+  });
+}
+
+export async function listReprintableOrders(
+  admin: AdminGraphqlClient,
+  shop: string,
+  limit = 100,
+) {
+  const rule = await getEnabledRule(shop);
+
+  if (!rule) {
+    return [];
+  }
+
+  const data = await graphqlJson<{ orders: { nodes: OrderListNode[] } }>(
+    admin,
+    ORDER_LIST_QUERY,
+    { first: limit, query: "status:open", reverse: true },
+  );
+
+  return data.orders.nodes
+    .map((order) => ({
+      order,
+      matchingOrders: matchingOpenFulfillmentOrders(order, rule.locationId),
+    }))
+    .filter(({ matchingOrders }) => matchingOrders.length)
+    .map(({ order, matchingOrders }) =>
+      reprintOrderSummary(order, matchingOrders),
+    );
+}
+
+export async function syncMissedAutoPrints(
+  admin: AdminGraphqlClient,
+  shop: string,
+  limit = 100,
+) {
+  const rule = await getEnabledRule(shop);
+
+  if (!rule) {
+    return {
+      checked: 0,
+      queued: 0,
+      skipped: 0,
+      reason: "No enabled local-agent printer rule.",
+      results: [],
+    };
+  }
+
+  const latestAutoPrint = await prisma.printJob.findFirst({
+    where: {
+      shop,
+      locationId: rule.locationId,
+      orderCreatedAt: { not: null },
+    },
+    orderBy: { orderCreatedAt: "desc" },
+  });
+
+  if (!latestAutoPrint?.orderCreatedAt) {
+    return {
+      checked: 0,
+      queued: 0,
+      skipped: 0,
+      reason: "No previous automatic print cursor exists yet.",
+      results: [],
+    };
+  }
+
+  const query = `status:open created_at:>${latestAutoPrint.orderCreatedAt.toISOString()}`;
+  const data = await graphqlJson<{ orders: { nodes: OrderListNode[] } }>(
+    admin,
+    ORDER_LIST_QUERY,
+    { first: limit, query, reverse: false },
+  );
+  const candidates = data.orders.nodes.filter(
+    (order) => matchingOpenFulfillmentOrders(order, rule.locationId).length,
+  );
+  const results = [];
+
+  for (const order of candidates) {
+    const result = await createPrintJobForOrder(admin, shop, order.id);
+
+    results.push({
+      orderName: order.name,
+      ...result,
+    });
+  }
+
+  return {
+    checked: candidates.length,
+    queued: results.filter((result) => result.created).length,
+    skipped: results.filter((result) => !result.created).length,
+    reason: "Checked Shopify for missed open fulfillment orders.",
+    results,
+  };
 }
 
 export async function retryPrintJob(shop: string, jobId: string) {
@@ -464,35 +1072,6 @@ export async function retryPrintJob(shop: string, jobId: string) {
   });
 
   return job;
-}
-
-export async function queueRecentOrders(
-  admin: AdminGraphqlClient,
-  shop: string,
-  limit = 20,
-) {
-  const data = await graphqlJson<{ orders: { nodes: RecentOrderNode[] } }>(
-    admin,
-    RECENT_ORDERS_QUERY,
-    { first: limit },
-  );
-  const results = [];
-
-  for (const order of data.orders.nodes) {
-    const result = await createPrintJobForOrder(admin, shop, order.id);
-
-    results.push({
-      orderName: order.name,
-      ...result,
-    });
-  }
-
-  return {
-    checked: results.length,
-    queued: results.filter((result) => result.created).length,
-    skipped: results.filter((result) => !result.created).length,
-    results,
-  };
 }
 
 export async function createPrintJobForFulfillmentOrder(
@@ -524,7 +1103,10 @@ export function orderGidFromWebhookPayload(payload: unknown) {
     return orderPayload.admin_graphql_api_id;
   }
 
-  if (typeof orderPayload.id === "number" || typeof orderPayload.id === "string") {
+  if (
+    typeof orderPayload.id === "number" ||
+    typeof orderPayload.id === "string"
+  ) {
     return `gid://shopify/Order/${orderPayload.id}`;
   }
 
@@ -552,7 +1134,9 @@ export function fulfillmentOrderGidFromWebhookPayload(payload: unknown) {
     return `gid://shopify/FulfillmentOrder/${id}`;
   }
 
-  throw new Error("The fulfillment order webhook did not include a fulfillment order id.");
+  throw new Error(
+    "The fulfillment order webhook did not include a fulfillment order id.",
+  );
 }
 
 function addressLines(address: Address | null) {
@@ -571,6 +1155,10 @@ function addressLines(address: Address | null) {
   ].filter((line): line is string => Boolean(line));
 }
 
+function htmlLines(lines: string[]) {
+  return lines.map((line) => escapeHtml(line)).join("<br>");
+}
+
 function lineTitle(line: PackingSlipLine) {
   if (!line.variantTitle || line.variantTitle === "Default Title") {
     return line.title;
@@ -579,26 +1167,141 @@ function lineTitle(line: PackingSlipLine) {
   return `${line.title} - ${line.variantTitle}`;
 }
 
-function renderPackingSlipHtml({
+function formatDateTime(value: string | null | undefined) {
+  if (!value) {
+    return "";
+  }
+
+  return new Date(value).toLocaleString("en-CA", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+function shippingMethod(order: OrderPrinterOrder) {
+  const line = order.shippingLines.nodes.find(
+    (shippingLine) => shippingLine.title,
+  );
+
+  return line?.title || "";
+}
+
+function latestTrackingInfo(order: OrderPrinterOrder) {
+  for (const fulfillment of order.fulfillments) {
+    const tracking = fulfillment.trackingInfo.find(
+      (info) => info.number || info.company || info.url,
+    );
+
+    if (tracking) {
+      return tracking;
+    }
+  }
+
+  return null;
+}
+
+function shipDate(order: OrderPrinterOrder) {
+  const fulfillment = order.fulfillments.find((item) => item.createdAt);
+
+  return formatDateTime(fulfillment?.createdAt);
+}
+
+function templateFieldValue({
   order,
   locationName,
   lines,
+  field,
 }: {
   order: OrderPrinterOrder;
   locationName: string;
   lines: PackingSlipLine[];
+  field: string | undefined;
 }) {
-  const shipTo = addressLines(order.shippingAddress);
-  const createdAt = new Date(order.createdAt).toLocaleString("en-CA", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
+  const tracking = latestTrackingInfo(order);
+  const firstLineImage = lines.find((line) => line.imageUrl)?.imageUrl || "";
 
+  switch (field) {
+    case "order.name":
+      return order.name;
+    case "order.poNumber":
+      return order.poNumber || "";
+    case "order.createdAt":
+      return formatDateTime(order.createdAt);
+    case "order.email":
+      return order.email || "";
+    case "order.phone":
+      return order.phone || "";
+    case "order.note":
+      return order.note || "";
+    case "order.fulfillmentStatus":
+      return order.displayFulfillmentStatus || "";
+    case "location.name":
+      return locationName;
+    case "shipping.address":
+      return addressLines(order.shippingAddress).join("\n");
+    case "billing.address":
+      return addressLines(order.billingAddress).join("\n");
+    case "shipping.method":
+      return shippingMethod(order);
+    case "shipping.shipDate":
+      return shipDate(order);
+    case "fulfillment.trackingNumber":
+      return tracking?.number || "";
+    case "fulfillment.trackingCompany":
+      return tracking?.company || "";
+    case "fulfillment.trackingUrl":
+      return tracking?.url || "";
+    case "items.count":
+      return String(lines.reduce((total, line) => total + line.quantity, 0));
+    case "items.firstImage":
+      return firstLineImage;
+    default:
+      return "";
+  }
+}
+
+function replaceTemplateTokens(
+  text: string | undefined,
+  context: {
+    order: OrderPrinterOrder;
+    locationName: string;
+    lines: PackingSlipLine[];
+  },
+) {
+  return String(text || "").replace(
+    /\{\{\s*([\w.]+)\s*\}\}/g,
+    (_match, field) => templateFieldValue({ ...context, field }),
+  );
+}
+
+function blockStyle(block: TemplateBlock) {
+  return [
+    `left:${block.x}px`,
+    `top:${block.y}px`,
+    `width:${block.w}px`,
+    `height:${block.h}px`,
+    `font-size:${block.fontSize || 12}px`,
+    `font-weight:${block.fontWeight === "700" ? "700" : "400"}`,
+    `text-align:${block.align || "left"}`,
+  ].join(";");
+}
+
+function renderItemsBlock(block: TemplateBlock, lines: PackingSlipLine[]) {
+  const hasImages = lines.some((line) => line.imageUrl);
   const rows = lines
     .map(
       (line) => `
         <tr>
           <td class="qty">${escapeHtml(line.quantity)}</td>
+          ${
+            hasImages
+              ? `<td class="item-image-cell">${
+                  line.imageUrl
+                    ? `<img src="${escapeHtml(line.imageUrl)}" alt="${escapeHtml(line.imageAlt || lineTitle(line))}">`
+                    : ""
+                }</td>`
+              : ""
+          }
           <td>
             <strong>${escapeHtml(lineTitle(line))}</strong>
             ${
@@ -612,13 +1315,91 @@ function renderPackingSlipHtml({
     )
     .join("");
 
+  return `
+    <div class="template-block items-block" style="${blockStyle(block)}">
+      <table>
+        <thead>
+          <tr>
+            <th>Qty</th>
+            ${hasImages ? "<th>Image</th>" : ""}
+            <th>Product</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderTemplateBlock(
+  block: TemplateBlock,
+  context: {
+    order: OrderPrinterOrder;
+    locationName: string;
+    lines: PackingSlipLine[];
+  },
+) {
+  if (block.type === "items") {
+    return renderItemsBlock(block, context.lines);
+  }
+
+  if (block.type === "image") {
+    const dataImage = templateFieldValue({ ...context, field: block.field });
+    const imageUrl = dataImage || block.imageUrl || "";
+
+    return `
+      <div class="template-block image-block" style="${blockStyle(block)}">
+        ${
+          imageUrl
+            ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(block.label || "Template image")}">`
+            : ""
+        }
+      </div>
+    `;
+  }
+
+  const rawValue =
+    block.type === "field"
+      ? templateFieldValue({ ...context, field: block.field })
+      : replaceTemplateTokens(block.text, context);
+  const value = htmlLines(rawValue.split(/\r?\n/));
+  const label =
+    block.type === "field" && block.label
+      ? `<div class="block-label">${escapeHtml(block.label)}</div>`
+      : "";
+
+  return `
+    <div class="template-block text-block" style="${blockStyle(block)}">
+      ${label}
+      <div class="block-value">${value}</div>
+    </div>
+  `;
+}
+
+function renderPackingSlipHtml({
+  order,
+  locationName,
+  lines,
+  template,
+}: {
+  order: OrderPrinterOrder;
+  locationName: string;
+  lines: PackingSlipLine[];
+  template: TemplateDesign;
+}) {
+  const design = normalizeTemplateDesign(template);
+  const context = { order, locationName, lines };
+  const blocks = design.blocks
+    .map((block) => renderTemplateBlock(block, context))
+    .join("");
+
   return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8">
     <title>Packing slip ${escapeHtml(order.name)}</title>
     <style>
-      @page { size: Letter; margin: 0.45in; }
+      @page { size: Letter; margin: 0; }
       * { box-sizing: border-box; }
       body {
         color: #111827;
@@ -626,41 +1407,31 @@ function renderPackingSlipHtml({
         font-size: 12px;
         margin: 0;
       }
-      header {
-        align-items: flex-start;
-        border-bottom: 2px solid #111827;
-        display: flex;
-        justify-content: space-between;
-        padding-bottom: 18px;
+      .page {
+        background: white;
+        height: 11in;
+        overflow: hidden;
+        position: relative;
+        width: 8.5in;
       }
-      h1 {
-        font-size: 28px;
-        letter-spacing: 0;
-        margin: 0 0 6px;
+      .template-block {
+        overflow: hidden;
+        position: absolute;
       }
-      h2 {
-        font-size: 13px;
-        margin: 0 0 8px;
+      .block-label {
+        color: #4b5563;
+        font-size: 10px;
+        font-weight: 700;
+        margin-bottom: 5px;
         text-transform: uppercase;
       }
-      .order-meta {
+      .block-value {
         line-height: 1.5;
-        text-align: right;
       }
-      .grid {
-        display: grid;
-        gap: 20px;
-        grid-template-columns: 1fr 1fr;
-        margin: 22px 0;
-      }
-      .panel {
-        border: 1px solid #cbd5e1;
-        border-radius: 6px;
-        min-height: 120px;
-        padding: 14px;
-      }
-      .address-line {
-        line-height: 1.5;
+      .image-block img {
+        height: 100%;
+        object-fit: contain;
+        width: 100%;
       }
       table {
         border-collapse: collapse;
@@ -679,9 +1450,17 @@ function renderPackingSlipHtml({
         vertical-align: top;
       }
       .qty {
-        font-size: 18px;
+        font-size: 16px;
         font-weight: 700;
         text-align: center;
+        width: 48px;
+      }
+      .item-image-cell {
+        width: 72px;
+      }
+      .item-image-cell img {
+        height: 54px;
+        object-fit: contain;
         width: 54px;
       }
       .meta {
@@ -690,54 +1469,10 @@ function renderPackingSlipHtml({
         font-size: 11px;
         margin-top: 4px;
       }
-      footer {
-        color: #6b7280;
-        font-size: 11px;
-        margin-top: 22px;
-      }
     </style>
   </head>
   <body>
-    <header>
-      <div>
-        <h1>Packing slip</h1>
-        <div>Canadian Off Grid Depot</div>
-      </div>
-      <div class="order-meta">
-        <strong>${escapeHtml(order.name)}</strong><br>
-        ${escapeHtml(createdAt)}<br>
-        ${escapeHtml(locationName)}
-      </div>
-    </header>
-
-    <section class="grid">
-      <div class="panel">
-        <h2>Ship to</h2>
-        ${
-          shipTo.length
-            ? shipTo
-                .map((line) => `<div class="address-line">${escapeHtml(line)}</div>`)
-                .join("")
-            : '<div class="address-line">No shipping address on order.</div>'
-        }
-      </div>
-      <div class="panel">
-        <h2>Order notes</h2>
-        <div class="address-line">${escapeHtml(order.note || "No notes.")}</div>
-      </div>
-    </section>
-
-    <table>
-      <thead>
-        <tr>
-          <th>Qty</th>
-          <th>Item</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-
-    <footer>Generated automatically by COG Order Printer.</footer>
+    <main class="page">${blocks}</main>
   </body>
 </html>`;
 }
@@ -752,32 +1487,34 @@ function fulfillmentLineToPackingLine(line: FulfillmentOrderLineItem) {
     variantTitle: orderLine?.variantTitle ?? null,
     sku: orderLine?.sku || null,
     quantity,
+    imageUrl: orderLine?.image?.url || null,
+    imageAlt: orderLine?.image?.altText || null,
   };
 }
 
-function orderLineToPackingLine(
-  line: OrderPrinterOrder["lineItems"]["nodes"][number],
-) {
-  return {
-    title: line.title || line.name || "Untitled item",
-    variantTitle: line.variantTitle ?? null,
-    sku: line.sku || null,
-    quantity: line.quantity ?? 0,
-  };
-}
+async function buildPackingSlipJob({
+  admin,
+  shop,
+  orderId,
+}: {
+  admin: AdminGraphqlClient;
+  shop: string;
+  orderId: string;
+}) {
+  if (!orderId) {
+    return {
+      ok: false as const,
+      reason: "Missing Shopify order id.",
+    };
+  }
 
-export async function createPrintJobForOrder(
-  admin: AdminGraphqlClient,
-  shop: string,
-  orderId: string,
-) {
-  const rule = await prisma.printerRule.findFirst({
-    where: { shop, enabled: true, printerProvider: LOCAL_AGENT_PROVIDER },
-    orderBy: { updatedAt: "desc" },
-  });
+  const rule = await getEnabledRule(shop);
 
   if (!rule) {
-    return { created: false, reason: "No enabled local-agent printer rule." };
+    return {
+      ok: false as const,
+      reason: "No enabled local-agent printer rule.",
+    };
   }
 
   const data = await graphqlJson<{ order: OrderPrinterOrder | null }>(
@@ -790,48 +1527,75 @@ export async function createPrintJobForOrder(
     throw new Error(`Shopify order ${orderId} was not found.`);
   }
 
-  const matchingFulfillmentOrders = data.order.fulfillmentOrders.nodes.filter(
-    (fulfillmentOrder) =>
-      fulfillmentOrder.assignedLocation?.location?.id === rule.locationId,
+  const matchingFulfillmentOrders = matchingOpenFulfillmentOrders(
+    data.order,
+    rule.locationId,
   );
 
   if (!matchingFulfillmentOrders.length) {
     return {
-      created: false,
+      ok: false as const,
       reason: `Order ${data.order.name} is not assigned to ${rule.locationName}.`,
     };
   }
 
-  const lines = matchingFulfillmentOrders.flatMap((fulfillmentOrder) =>
-    fulfillmentOrder.lineItems.nodes.map(fulfillmentLineToPackingLine),
-  );
-  const printableLines = lines.length
-    ? lines
-    : data.order.lineItems.nodes.map(orderLineToPackingLine);
+  const printableLines = matchingFulfillmentOrders
+    .flatMap((fulfillmentOrder) =>
+      fulfillmentOrder.lineItems.nodes.map(fulfillmentLineToPackingLine),
+    )
+    .filter((line) => line.quantity > 0);
+
+  if (!printableLines.length) {
+    return {
+      ok: false as const,
+      reason: `Order ${data.order.name} has no unfulfilled items for ${rule.locationName}.`,
+    };
+  }
+
   const html = renderPackingSlipHtml({
     order: data.order,
     locationName: rule.locationName,
-    lines: printableLines.filter((line) => line.quantity > 0),
+    lines: printableLines,
+    template: templateFromRule(rule).design,
   });
+
+  return {
+    ok: true as const,
+    order: data.order,
+    rule,
+    html,
+  };
+}
+
+export async function createPrintJobForOrder(
+  admin: AdminGraphqlClient,
+  shop: string,
+  orderId: string,
+) {
+  const payload = await buildPackingSlipJob({ admin, shop, orderId });
+
+  if (!payload.ok) {
+    return { created: false, reason: payload.reason };
+  }
 
   try {
     const job = await prisma.printJob.create({
       data: {
         shop,
-        orderId: data.order.id,
-        orderName: data.order.name,
-        orderCreatedAt: new Date(data.order.createdAt),
-        locationId: rule.locationId,
-        locationName: rule.locationName,
-        printerName: rule.printerName,
+        orderId: payload.order.id,
+        orderName: payload.order.name,
+        orderCreatedAt: new Date(payload.order.createdAt),
+        locationId: payload.rule.locationId,
+        locationName: payload.rule.locationName,
+        printerName: payload.rule.printerName,
         printerProvider: LOCAL_AGENT_PROVIDER,
         printerExternalId: null,
-        html,
+        html: payload.html,
         events: {
           create: {
             shop,
             status: "QUEUED",
-            message: `Queued for ${rule.printerName}.`,
+            message: `Automatically queued for ${payload.rule.printerName}.`,
           },
         },
       },
@@ -844,11 +1608,77 @@ export async function createPrintJobForOrder(
     if (prismaError.code === "P2002") {
       return {
         created: false,
-        reason: `Order ${data.order.name} was already queued for ${rule.locationName}.`,
+        reason: `Order ${payload.order.name} was already auto-printed for ${payload.rule.locationName}.`,
       };
     }
 
     throw error;
+  }
+}
+
+export async function createManualReprintJobForOrder(
+  admin: AdminGraphqlClient,
+  shop: string,
+  orderId: string,
+) {
+  const payload = await buildPackingSlipJob({ admin, shop, orderId });
+
+  if (!payload.ok) {
+    return { created: false, reason: payload.reason };
+  }
+
+  const data = {
+    orderName: payload.order.name,
+    orderCreatedAt: new Date(payload.order.createdAt),
+    locationName: payload.rule.locationName,
+    printerName: payload.rule.printerName,
+    printerProvider: LOCAL_AGENT_PROVIDER,
+    printerExternalId: null,
+    status: "QUEUED" as const,
+    html: payload.html,
+    providerJobId: null,
+    lastError: null,
+    claimedAt: null,
+    printedAt: null,
+    events: {
+      create: {
+        shop,
+        status: "QUEUED" as const,
+        message: `Manual reprint queued for ${payload.rule.printerName}.`,
+      },
+    },
+  };
+
+  try {
+    const job = await prisma.printJob.create({
+      data: {
+        shop,
+        orderId: payload.order.id,
+        locationId: payload.rule.locationId,
+        ...data,
+      },
+    });
+
+    return { created: true, jobId: job.id, reason: "Queued." };
+  } catch (error) {
+    const prismaError = error as Prisma.PrismaClientKnownRequestError;
+
+    if (prismaError.code !== "P2002") {
+      throw error;
+    }
+
+    const job = await prisma.printJob.update({
+      where: {
+        shop_orderId_locationId: {
+          shop,
+          orderId: payload.order.id,
+          locationId: payload.rule.locationId,
+        },
+      },
+      data,
+    });
+
+    return { created: true, jobId: job.id, reason: "Queued." };
   }
 }
 

@@ -124,7 +124,12 @@ function commandPath(command) {
       platform() === "win32"
         ? run("where.exe", [command])
         : run("sh", ["-lc", `command -v ${shellQuote(command)}`]);
-    return finder.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || null;
+    return (
+      finder
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find(Boolean) || null
+    );
   } catch {
     return null;
   }
@@ -220,10 +225,28 @@ async function registerPrinters() {
   });
 
   console.log(
-    `Registered ${printers.length} printer${printers.length === 1 ? "" : "s"}: ${printers
-      .map((printer) => printer.name)
-      .join(", ") || "none"}`,
+    `Registered ${printers.length} printer${printers.length === 1 ? "" : "s"}: ${
+      printers.map((printer) => printer.name).join(", ") || "none"
+    }`,
   );
+}
+
+async function syncMissedOrders(reason) {
+  try {
+    const result = await api("/api/agent/sync", {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+
+    console.log(
+      `Missed-order sync (${reason}): checked ${result.checked || 0}, queued ${
+        result.queued || 0
+      }, skipped ${result.skipped || 0}. ${result.reason || ""}`.trim(),
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Sync failed.";
+    console.error(`Missed-order sync (${reason}) failed: ${message}`);
+  }
 }
 
 function browserCandidates() {
@@ -254,7 +277,10 @@ function browserCandidates() {
           )
         : null,
       process.env.LOCALAPPDATA
-        ? join(process.env.LOCALAPPDATA, "Google\\Chrome\\Application\\chrome.exe")
+        ? join(
+            process.env.LOCALAPPDATA,
+            "Google\\Chrome\\Application\\chrome.exe",
+          )
         : null,
       "msedge.exe",
       "chrome.exe",
@@ -289,7 +315,14 @@ function sumatraCandidates() {
     stringConfig(windowsConfig.sumatraPath),
     join(appDir, "SumatraPDF.exe"),
     join(appDir, "vendor", "SumatraPDF.exe"),
-    join(scriptDir, "..", "node_modules", "pdf-to-printer", "dist", "SumatraPDF-3.4.6-32.exe"),
+    join(
+      scriptDir,
+      "..",
+      "node_modules",
+      "pdf-to-printer",
+      "dist",
+      "SumatraPDF-3.4.6-32.exe",
+    ),
   ].filter(Boolean);
 }
 
@@ -367,7 +400,9 @@ async function printJob(job) {
 
     return {
       printed: true,
-      message: renderedPdf ? "Printed generated PDF." : "Printed HTML directly.",
+      message: renderedPdf
+        ? "Printed generated PDF."
+        : "Printed HTML directly.",
     };
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -406,10 +441,27 @@ function sleep(ms) {
 async function main() {
   requiredConfig();
   await registerPrinters();
+  await syncMissedOrders("startup");
 
   let lastRegister = Date.now();
+  let lastSync = Date.now();
+  let lastLoopAt = Date.now();
 
   while (!stopped) {
+    const now = Date.now();
+    const sleepGap = now - lastLoopAt;
+
+    if (sleepGap > Math.max(pollIntervalMs * 3, 60 * 1000)) {
+      await registerPrinters();
+      await syncMissedOrders("wake");
+      lastRegister = Date.now();
+      lastSync = Date.now();
+    } else if (now - lastSync > 15 * 60 * 1000) {
+      await syncMissedOrders("interval");
+      lastSync = Date.now();
+    }
+
+    lastLoopAt = Date.now();
     await pollJobs();
 
     if (Date.now() - lastRegister > 5 * 60 * 1000) {

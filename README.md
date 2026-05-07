@@ -6,8 +6,9 @@ Embedded Shopify app that queues a packing slip print job as soon as a new order
 
 - Shopify sends `orders/create` and fulfillment-order routing webhooks to the app.
 - The app waits for fulfillment routing, then looks up the order's fulfillment orders and checks the assigned fulfillment location.
-- If the location matches the configured rule, the app stores a packing-slip print job for the selected printer.
+- If the location matches the configured rule and still has open fulfillment items, the app stores a packing-slip print job for the selected printer.
 - A local print hook running on the single print computer polls the app, renders the packing slip, and sends it to the selected printer.
+- When the Windows service starts or resumes after sleep, it asks the app to scan Shopify for open orders created after the latest automatic print and queues any matching missed jobs.
 
 Vercel cannot directly print to a USB or LAN printer. The local hook is the bridge that makes automatic physical printing possible without a paid print relay service.
 
@@ -18,10 +19,13 @@ The embedded app configures:
 - Fulfillment location
 - Printer for that fulfillment location
 - Print-agent token
+- Packing slip template
 
 Printers appear after the local hook registers them.
 
-If Shopify created an order before routing completed, use **Check recent orders** in the embedded app to scan the latest orders and queue any matching packing slips that were missed.
+Use **Reprint Packing Slip** in the embedded app to load currently unfulfilled orders assigned to the configured location. Nothing prints from that list until you manually click **Print** on a specific order.
+
+The template editor stores a drag-and-drop packing slip layout. Blocks can use order data fields, custom text with `{{field.name}}` tokens, custom image URLs, product images, and the line-item table.
 
 ## Development
 
@@ -61,6 +65,7 @@ Windows notes:
 
 - Microsoft Edge or Google Chrome must be installed for HTML-to-PDF rendering. Edge is already present on normal Windows 10/11 installs.
 - If the target printer is installed only for one Windows user, install the service under that account: `.\install-service.ps1 -Username ".\shipping-user"`.
+- Leave the service set to Automatic. After a reboot, service restart, sleep, or lid close/wake cycle, it will register printers, reconcile missed open orders since the latest automatic print, then print queued jobs.
 - Logs are written to the package's `logs` folder.
 
 ## Developer print hook
