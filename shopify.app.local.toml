@@ -1,0 +1,21 @@
+# Localhost-only development config.
+# Shopify cannot deliver app-specific webhooks to localhost. Use `npm run dev:tunnel`
+# when testing orders/create webhook delivery through a public tunnel.
+
+client_id = "dcb56eca385c5c3f61a355d8f59a3456"
+application_url = "https://example.com"
+embedded = true
+name = "COG Order Printer"
+
+[access_scopes]
+scopes = "read_orders,read_locations,read_merchant_managed_fulfillment_orders"
+
+[webhooks]
+api_version = "2026-07"
+
+[auth]
+redirect_urls = [ "https://example.com/auth/callback" ]
+
+[build]
+include_config_on_deploy = false
+automatically_update_urls_on_dev = true

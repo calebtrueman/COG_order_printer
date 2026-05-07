@@ -1,0 +1,194 @@
+.printer-shell {
+  display: grid;
+  gap: 16px;
+  max-width: 1120px;
+}
+
+.notice {
+  border-radius: 6px;
+  font-weight: 650;
+  padding: 12px 14px;
+}
+
+.notice.success {
+  background: #e8f5ed;
+  color: #0f5132;
+}
+
+.notice.error {
+  background: #fdecec;
+  color: #842029;
+}
+
+.settings-form {
+  align-items: end;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
+}
+
+.settings-form label,
+.field-label {
+  color: #374151;
+  display: grid;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 6px;
+  text-transform: uppercase;
+}
+
+.settings-form select,
+.settings-form button,
+.agent-grid button,
+.job-table button {
+  border: 1px solid #9ca3af;
+  border-radius: 6px;
+  font: inherit;
+  min-height: 38px;
+  padding: 7px 10px;
+}
+
+.settings-form button,
+.agent-grid button,
+.job-table button {
+  background: #111827;
+  color: white;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.settings-form button:disabled,
+.agent-grid button:disabled,
+.job-table button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.checkbox-row {
+  align-items: center;
+  display: flex !important;
+  gap: 8px !important;
+  grid-column: 1 / -1;
+  text-transform: none !important;
+}
+
+.checkbox-row input {
+  height: 16px;
+  width: 16px;
+}
+
+.empty-state {
+  color: #6b7280;
+  margin: 12px 0 0;
+}
+
+.agent-grid {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  margin-bottom: 14px;
+}
+
+.token,
+.command {
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  color: #111827;
+  display: block;
+  overflow-wrap: anywhere;
+  padding: 10px;
+}
+
+.command {
+  margin-top: 6px;
+}
+
+.printer-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.printer-row {
+  align-items: center;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(180px, 1fr) minmax(140px, 0.8fr) minmax(180px, 1fr);
+  padding: 10px 12px;
+}
+
+.printer-row span {
+  color: #4b5563;
+}
+
+.job-table-wrap {
+  overflow-x: auto;
+}
+
+.job-table {
+  border-collapse: collapse;
+  min-width: 840px;
+  width: 100%;
+}
+
+.job-table th {
+  background: #f9fafb;
+  color: #374151;
+  font-size: 12px;
+  padding: 10px;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.job-table td {
+  border-top: 1px solid #e5e7eb;
+  padding: 10px;
+  vertical-align: top;
+}
+
+.job-error {
+  color: #b42318;
+  display: block;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.status {
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 8px;
+}
+
+.status.queued {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.status.printing {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status.printed {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status.failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+@media (max-width: 760px) {
+  .settings-form,
+  .agent-grid,
+  .printer-row {
+    grid-template-columns: 1fr;
+  }
+}

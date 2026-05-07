@@ -1,0 +1,117 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+model AppSettings {
+  id         String   @id @default(cuid())
+  shop       String   @unique
+  agentToken String   @unique
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model PrinterRule {
+  id           String   @id @default(cuid())
+  shop         String
+  locationId   String
+  locationName String
+  printerName  String
+  enabled      Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([shop, locationId])
+  @@index([shop, enabled])
+}
+
+model RegisteredPrinter {
+  id         String   @id @default(cuid())
+  shop       String
+  name       String
+  isDefault  Boolean  @default(false)
+  active     Boolean  @default(true)
+  agentName  String?
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([shop, name])
+  @@index([shop, active])
+}
+
+model PrintJob {
+  id             String         @id @default(cuid())
+  shop           String
+  orderId        String
+  orderName      String
+  orderCreatedAt DateTime?
+  locationId     String
+  locationName   String
+  printerName    String
+  status         PrintJobStatus @default(QUEUED)
+  html           String
+  attempts       Int            @default(0)
+  lastError      String?
+  claimedAt      DateTime?
+  printedAt      DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  events         PrintEvent[]
+
+  @@unique([shop, orderId, locationId])
+  @@index([shop, status, createdAt])
+  @@index([printerName])
+}
+
+model PrintEvent {
+  id        String         @id @default(cuid())
+  shop      String
+  jobId     String
+  status    PrintJobStatus
+  message   String?
+  createdAt DateTime       @default(now())
+  job       PrintJob       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([shop, createdAt])
+  @@index([jobId])
+}
+
+enum PrintJobStatus {
+  QUEUED
+  PRINTING
+  PRINTED
+  FAILED
+  SKIPPED
+}
