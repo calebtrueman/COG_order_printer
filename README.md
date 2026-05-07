@@ -7,7 +7,7 @@ Embedded Shopify app that queues a packing slip print job as soon as a new order
 - Shopify sends `orders/create` to `/webhooks/orders/create`.
 - The app looks up the order's fulfillment orders and checks the assigned fulfillment location.
 - If the location matches the configured rule, the app stores a packing-slip print job for the selected printer.
-- A local print hook running on the single print computer polls the app, renders the packing slip, and sends it to the selected printer through CUPS.
+- A local print hook running on the single print computer polls the app, renders the packing slip, and sends it to the selected printer.
 
 Vercel cannot directly print to a USB or LAN printer. The local hook is the bridge that makes automatic physical printing possible without a paid print relay service.
 
@@ -32,7 +32,36 @@ npm run dev
 
 `npm run dev` uses `shopify.app.local.toml` with localhost mode. Use `npm run dev:tunnel` when testing Shopify webhook delivery.
 
-## Local print hook
+## Windows print service
+
+Build the self-contained Windows service package:
+
+```shell
+npm run agent:windows
+```
+
+The build output is `dist/COGOrderPrinterAgent-windows-x64.zip`. Copy that zip to the Windows shipping computer, extract it somewhere permanent like `C:\COGOrderPrinterAgent`, then run PowerShell as Administrator:
+
+```powershell
+.\install-service.ps1
+```
+
+The first run creates `agent-config.json`. Paste the `appUrl` and `token` shown in the Shopify app's Print agent section, save the file, then run `.\install-service.ps1` again.
+
+The package includes:
+
+- `COGOrderPrinterAgent.exe`, a bundled Node runtime and agent
+- `COGOrderPrinterAgent.Service.exe`, a WinSW service wrapper
+- `SumatraPDF.exe`, used for silent PDF printing to a named Windows printer
+- PowerShell scripts to install, restart, uninstall, and test the service
+
+Windows notes:
+
+- Microsoft Edge or Google Chrome must be installed for HTML-to-PDF rendering. Edge is already present on normal Windows 10/11 installs.
+- If the target printer is installed only for one Windows user, install the service under that account: `.\install-service.ps1 -Username ".\shipping-user"`.
+- Logs are written to the package's `logs` folder.
+
+## Developer print hook
 
 Start the hook on the computer that can reach the target printer:
 
@@ -42,7 +71,7 @@ SHOPIFY_PRINTER_AGENT_TOKEN=token-from-app-settings \
 npm run agent
 ```
 
-The hook expects macOS or another CUPS environment with:
+When run directly from this repo, the hook expects macOS/Linux CUPS or Windows with the packaged helper files. On CUPS systems it uses:
 
 - `lpstat` for printer discovery
 - `lp` for printing
@@ -68,5 +97,7 @@ Deploy the web app first, then publish the Shopify app config against the hosted
 ```shell
 SHOPIFY_APP_URL=https://cog-order-printer.vercel.app npm run deploy:live
 ```
+
+When a change adds a new Prisma migration, run `npm run migrate:deploy` against production before or during the rollout. Normal Vercel builds only generate Prisma Client and build the app.
 
 The Shopify app also needs protected customer data access for shipping addresses if packing slips should include the recipient address.

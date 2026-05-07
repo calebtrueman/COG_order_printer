@@ -88,7 +88,16 @@ export default function OrderPrinterDashboard() {
   const defaultLocationId = data.rule?.locationId || data.locations[0]?.id || "";
   const defaultPrinterName = data.rule?.printerName || data.printers[0]?.name || "";
   const canSave = Boolean(defaultLocationId && defaultPrinterName);
-  const agentCommand = `SHOPIFY_PRINTER_AGENT_URL=${data.appUrl} SHOPIFY_PRINTER_AGENT_TOKEN=${data.agentToken} npm run agent`;
+  const agentConfig = JSON.stringify(
+    {
+      appUrl: data.appUrl,
+      token: data.agentToken,
+      agentName: "COG shipping station",
+      pollIntervalMs: 5000,
+    },
+    null,
+    2,
+  );
 
   return (
     <s-page heading="COG Order Printer">
@@ -156,8 +165,8 @@ export default function OrderPrinterDashboard() {
               </button>
             </Form>
           </div>
-          <div className="field-label">Start command</div>
-          <code className="command">{agentCommand}</code>
+          <div className="field-label">Agent config</div>
+          <pre className="command">{agentConfig}</pre>
           <div className="printer-list">
             {data.printers.map((printer) => (
               <div className="printer-row" key={printer.name}>

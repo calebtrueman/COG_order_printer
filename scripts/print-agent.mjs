@@ -1,34 +1,98 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { hostname, platform, tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 
-const appUrl = (process.env.SHOPIFY_PRINTER_AGENT_URL || "").replace(/\/$/, "");
-const token = process.env.SHOPIFY_PRINTER_AGENT_TOKEN || "";
-const agentName = process.env.SHOPIFY_PRINTER_AGENT_NAME || hostnameAgentName();
-const pollIntervalMs = Number(process.env.SHOPIFY_PRINTER_POLL_MS || 5000);
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const packaged = Boolean(process.pkg);
+const appDir = packaged ? dirname(process.execPath) : process.cwd();
+const config = await loadConfig();
+const windowsConfig = objectConfig(config.windows);
+
+const appUrl = (
+  process.env.SHOPIFY_PRINTER_AGENT_URL ||
+  stringConfig(config.appUrl) ||
+  ""
+).replace(/\/$/, "");
+const token =
+  process.env.SHOPIFY_PRINTER_AGENT_TOKEN || stringConfig(config.token) || "";
+const agentName =
+  process.env.SHOPIFY_PRINTER_AGENT_NAME ||
+  stringConfig(config.agentName) ||
+  hostnameAgentName();
+const pollIntervalMs = numberConfig(
+  process.env.SHOPIFY_PRINTER_POLL_MS || config.pollIntervalMs,
+  5000,
+);
 
 let stopped = false;
 
 function hostnameAgentName() {
-  const result = spawnSync("hostname", { encoding: "utf8" });
-  return `print-agent-${(result.stdout || "local").trim() || "local"}`;
+  return `print-agent-${hostname() || "local"}`;
+}
+
+function objectConfig(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
+}
+
+function stringConfig(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function numberConfig(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function loadConfig() {
+  const explicit = process.env.SHOPIFY_PRINTER_AGENT_CONFIG;
+  const candidates = [
+    explicit,
+    join(appDir, "agent-config.json"),
+    join(process.cwd(), "agent-config.json"),
+    join(scriptDir, "..", "agent-config.json"),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const filePath = resolve(String(candidate));
+
+    if (!existsSync(filePath)) {
+      continue;
+    }
+
+    try {
+      return JSON.parse(await readFile(filePath, "utf8"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid JSON.";
+      throw new Error(`Could not read ${filePath}: ${message}`);
+    }
+  }
+
+  return {};
 }
 
 function requiredConfig() {
   if (!appUrl) {
-    throw new Error("SHOPIFY_PRINTER_AGENT_URL is required.");
+    throw new Error(
+      "SHOPIFY_PRINTER_AGENT_URL or agent-config.json appUrl is required.",
+    );
   }
 
   if (!token) {
-    throw new Error("SHOPIFY_PRINTER_AGENT_TOKEN is required.");
+    throw new Error(
+      "SHOPIFY_PRINTER_AGENT_TOKEN or agent-config.json token is required.",
+    );
   }
 }
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
+    windowsHide: true,
     ...options,
   });
 
@@ -45,7 +109,36 @@ function run(command, args, options = {}) {
   return result.stdout || "";
 }
 
+function commandPath(command) {
+  if (isAbsolute(command) && existsSync(command)) {
+    return command;
+  }
+
+  if (command.includes("/") || command.includes("\\")) {
+    const resolved = resolve(appDir, command);
+    return existsSync(resolved) ? resolved : null;
+  }
+
+  try {
+    const finder =
+      platform() === "win32"
+        ? run("where.exe", [command])
+        : run("sh", ["-lc", `command -v ${shellQuote(command)}`]);
+    return finder.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || null;
+  } catch {
+    return null;
+  }
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
 function listPrinters() {
+  return platform() === "win32" ? listWindowsPrinters() : listCupsPrinters();
+}
+
+function listCupsPrinters() {
   const stdout = run("lpstat", ["-e"]);
   const names = stdout
     .split(/\r?\n/)
@@ -64,6 +157,37 @@ function listPrinters() {
     name,
     isDefault: name === defaultPrinter,
   }));
+}
+
+function listWindowsPrinters() {
+  const command = [
+    "$printers = Get-CimInstance -ClassName Win32_Printer |",
+    "Select-Object -Property Name,Default;",
+    "$printers | ConvertTo-Json -Compress",
+  ].join(" ");
+
+  const stdout = run("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    command,
+  ]).trim();
+
+  if (!stdout) {
+    return [];
+  }
+
+  const parsed = JSON.parse(stdout);
+  const printers = Array.isArray(parsed) ? parsed : [parsed];
+
+  return printers
+    .map((printer) => ({
+      name: stringConfig(printer.Name) || "",
+      isDefault: printer.Default === true,
+    }))
+    .filter((printer) => printer.name);
 }
 
 async function api(path, options = {}) {
@@ -102,7 +226,41 @@ async function registerPrinters() {
   );
 }
 
-function chromeCandidates() {
+function browserCandidates() {
+  if (platform() === "win32") {
+    return [
+      stringConfig(process.env.SHOPIFY_PRINTER_BROWSER_PATH),
+      stringConfig(windowsConfig.browserPath),
+      join(
+        process.env.PROGRAMFILES || "C:\\Program Files",
+        "Microsoft\\Edge\\Application\\msedge.exe",
+      ),
+      join(
+        process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)",
+        "Microsoft\\Edge\\Application\\msedge.exe",
+      ),
+      join(
+        process.env.PROGRAMFILES || "C:\\Program Files",
+        "Google\\Chrome\\Application\\chrome.exe",
+      ),
+      join(
+        process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)",
+        "Google\\Chrome\\Application\\chrome.exe",
+      ),
+      process.env.LOCALAPPDATA
+        ? join(
+            process.env.LOCALAPPDATA,
+            "Microsoft\\Edge\\Application\\msedge.exe",
+          )
+        : null,
+      process.env.LOCALAPPDATA
+        ? join(process.env.LOCALAPPDATA, "Google\\Chrome\\Application\\chrome.exe")
+        : null,
+      "msedge.exe",
+      "chrome.exe",
+    ].filter(Boolean);
+  }
+
   return [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
@@ -114,27 +272,40 @@ function chromeCandidates() {
 }
 
 function findBrowser() {
-  for (const candidate of chromeCandidates()) {
-    if (candidate.includes("/") && existsSync(candidate)) {
-      return candidate;
-    }
+  for (const candidate of browserCandidates()) {
+    const resolved = commandPath(candidate);
 
-    if (!candidate.includes("/")) {
-      const result = spawnSync("command", ["-v", candidate], {
-        encoding: "utf8",
-        shell: true,
-      });
-
-      if (result.status === 0 && result.stdout.trim()) {
-        return result.stdout.trim();
-      }
+    if (resolved) {
+      return resolved;
     }
   }
 
   return null;
 }
 
-function renderPdf(htmlPath, pdfPath) {
+function sumatraCandidates() {
+  return [
+    stringConfig(process.env.SHOPIFY_PRINTER_SUMATRA_PATH),
+    stringConfig(windowsConfig.sumatraPath),
+    join(appDir, "SumatraPDF.exe"),
+    join(appDir, "vendor", "SumatraPDF.exe"),
+    join(scriptDir, "..", "node_modules", "pdf-to-printer", "dist", "SumatraPDF-3.4.6-32.exe"),
+  ].filter(Boolean);
+}
+
+function findSumatraPdf() {
+  for (const candidate of sumatraCandidates()) {
+    const resolved = commandPath(candidate);
+
+    if (resolved) {
+      return resolved;
+    }
+  }
+
+  return null;
+}
+
+function renderPdf(htmlPath, pdfPath, browserProfileDir) {
   const browser = findBrowser();
 
   if (!browser) {
@@ -144,7 +315,9 @@ function renderPdf(htmlPath, pdfPath) {
   run(browser, [
     "--headless=new",
     "--disable-gpu",
+    "--disable-extensions",
     "--no-first-run",
+    `--user-data-dir=${browserProfileDir}`,
     `--print-to-pdf=${pdfPath}`,
     `file://${htmlPath}`,
   ]);
@@ -152,16 +325,44 @@ function renderPdf(htmlPath, pdfPath) {
   return true;
 }
 
+function printPdfWindows(pdfPath, printerName) {
+  const sumatra = findSumatraPdf();
+
+  if (!sumatra) {
+    throw new Error(
+      "SumatraPDF.exe was not found next to the agent. Rebuild the Windows package or set SHOPIFY_PRINTER_SUMATRA_PATH.",
+    );
+  }
+
+  run(sumatra, ["-print-to", printerName, "-silent", pdfPath]);
+}
+
 async function printJob(job) {
   const dir = await mkdtemp(join(tmpdir(), "cog-order-printer-"));
   const htmlPath = join(dir, `${job.id}.html`);
   const pdfPath = join(dir, `${job.id}.pdf`);
+  const browserProfileDir = join(dir, "browser-profile");
 
   try {
     await writeFile(htmlPath, job.html, "utf8");
-    const renderedPdf = renderPdf(htmlPath, pdfPath);
-    const printablePath = renderedPdf ? pdfPath : htmlPath;
+    const renderedPdf = renderPdf(htmlPath, pdfPath, browserProfileDir);
 
+    if (platform() === "win32") {
+      if (!renderedPdf) {
+        throw new Error(
+          "Microsoft Edge or Google Chrome is required to render packing slips to PDF.",
+        );
+      }
+
+      printPdfWindows(pdfPath, job.printerName);
+
+      return {
+        printed: true,
+        message: "Printed generated PDF with SumatraPDF.",
+      };
+    }
+
+    const printablePath = renderedPdf ? pdfPath : htmlPath;
     run("lp", ["-d", job.printerName, printablePath]);
 
     return {
