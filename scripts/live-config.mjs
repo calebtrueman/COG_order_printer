@@ -75,6 +75,14 @@ api_version = "2026-07"
   uri = "/webhooks/orders/create"
   topics = [ "orders/create" ]
 
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/fulfillment-orders/order-routing-complete"
+  topics = [ "fulfillment_orders/order_routing_complete" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/fulfillment-orders/moved"
+  topics = [ "fulfillment_orders/moved" ]
+
 [access_scopes]
 scopes = "${scopes}"
 

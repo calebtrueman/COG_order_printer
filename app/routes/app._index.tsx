@@ -14,6 +14,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import {
   loadDashboard,
+  queueRecentOrders,
   retryPrintJob,
   rotateAgentToken,
   savePrinterRule,
@@ -58,6 +59,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (intent === "retry-job") {
       await retryPrintJob(session.shop, String(formData.get("jobId") || ""));
       return { ok: true, message: "Print job queued again." } satisfies ActionData;
+    }
+
+    if (intent === "queue-recent-orders") {
+      const result = await queueRecentOrders(admin, session.shop);
+      return {
+        ok: true,
+        message: `Checked ${result.checked} recent orders; queued ${result.queued}, skipped ${result.skipped}.`,
+      } satisfies ActionData;
     }
 
     return { ok: false, message: "Unknown action." } satisfies ActionData;
@@ -179,6 +188,12 @@ export default function OrderPrinterDashboard() {
         </s-section>
 
         <s-section heading="Recent print jobs">
+          <Form method="post" className="inline-action">
+            <input type="hidden" name="intent" value="queue-recent-orders" />
+            <button type="submit" disabled={saving}>
+              Check recent orders
+            </button>
+          </Form>
           {data.jobs.length ? (
             <div className="job-table-wrap">
               <table className="job-table">

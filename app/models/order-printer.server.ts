@@ -121,6 +121,24 @@ type OrderPrinterOrder = {
   };
 };
 
+type RecentOrderNode = {
+  id: string;
+  name: string;
+};
+
+type OrderPrinterFulfillmentOrder = {
+  id: string;
+  status: string;
+  assignedLocation: {
+    name: string | null;
+    location: { id: string; name: string } | null;
+  } | null;
+  order: {
+    id: string;
+    name: string;
+  };
+};
+
 type AgentPrinterInput = {
   name: string;
   isDefault?: boolean;
@@ -209,6 +227,37 @@ const ORDER_QUERY = `#graphql
             }
           }
         }
+      }
+    }
+  }
+`;
+
+const RECENT_ORDERS_QUERY = `#graphql
+  query OrderPrinterRecentOrders($first: Int!) {
+    orders(first: $first, sortKey: CREATED_AT, reverse: true) {
+      nodes {
+        id
+        name
+      }
+    }
+  }
+`;
+
+const FULFILLMENT_ORDER_ORDER_QUERY = `#graphql
+  query OrderPrinterFulfillmentOrder($id: ID!) {
+    fulfillmentOrder(id: $id) {
+      id
+      status
+      assignedLocation {
+        name
+        location {
+          id
+          name
+        }
+      }
+      order {
+        id
+        name
       }
     }
   }
@@ -435,6 +484,54 @@ export async function retryPrintJob(shop: string, jobId: string) {
   return job;
 }
 
+export async function queueRecentOrders(
+  admin: AdminGraphqlClient,
+  shop: string,
+  limit = 20,
+) {
+  const data = await graphqlJson<{ orders: { nodes: RecentOrderNode[] } }>(
+    admin,
+    RECENT_ORDERS_QUERY,
+    { first: limit },
+  );
+  const results = [];
+
+  for (const order of data.orders.nodes) {
+    const result = await createPrintJobForOrder(admin, shop, order.id);
+
+    results.push({
+      orderName: order.name,
+      ...result,
+    });
+  }
+
+  return {
+    checked: results.length,
+    queued: results.filter((result) => result.created).length,
+    skipped: results.filter((result) => !result.created).length,
+    results,
+  };
+}
+
+export async function createPrintJobForFulfillmentOrder(
+  admin: AdminGraphqlClient,
+  shop: string,
+  fulfillmentOrderId: string,
+) {
+  const data = await graphqlJson<{
+    fulfillmentOrder: OrderPrinterFulfillmentOrder | null;
+  }>(admin, FULFILLMENT_ORDER_ORDER_QUERY, { id: fulfillmentOrderId });
+
+  if (!data.fulfillmentOrder) {
+    return {
+      created: false,
+      reason: `Fulfillment order ${fulfillmentOrderId} was not found.`,
+    };
+  }
+
+  return createPrintJobForOrder(admin, shop, data.fulfillmentOrder.order.id);
+}
+
 export function orderGidFromWebhookPayload(payload: unknown) {
   const orderPayload = payload as {
     admin_graphql_api_id?: unknown;
@@ -450,6 +547,30 @@ export function orderGidFromWebhookPayload(payload: unknown) {
   }
 
   throw new Error("The orders/create webhook did not include an order id.");
+}
+
+export function fulfillmentOrderGidFromWebhookPayload(payload: unknown) {
+  const body = payload as {
+    fulfillment_order?: { id?: unknown };
+    moved_fulfillment_order?: { id?: unknown };
+    remaining_fulfillment_order?: { id?: unknown };
+    replacement_fulfillment_order?: { id?: unknown };
+  };
+  const id =
+    body.fulfillment_order?.id ||
+    body.moved_fulfillment_order?.id ||
+    body.remaining_fulfillment_order?.id ||
+    body.replacement_fulfillment_order?.id;
+
+  if (typeof id === "string") {
+    return id;
+  }
+
+  if (typeof id === "number") {
+    return `gid://shopify/FulfillmentOrder/${id}`;
+  }
+
+  throw new Error("The fulfillment order webhook did not include a fulfillment order id.");
 }
 
 function addressLines(address: Address | null) {

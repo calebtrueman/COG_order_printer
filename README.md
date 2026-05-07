@@ -4,8 +4,8 @@ Embedded Shopify app that queues a packing slip print job as soon as a new order
 
 ## How it works
 
-- Shopify sends `orders/create` to `/webhooks/orders/create`.
-- The app looks up the order's fulfillment orders and checks the assigned fulfillment location.
+- Shopify sends `orders/create` and fulfillment-order routing webhooks to the app.
+- The app waits for fulfillment routing, then looks up the order's fulfillment orders and checks the assigned fulfillment location.
 - If the location matches the configured rule, the app stores a packing-slip print job for the selected printer.
 - A local print hook running on the single print computer polls the app, renders the packing slip, and sends it to the selected printer.
 
@@ -20,6 +20,8 @@ The embedded app configures:
 - Print-agent token
 
 Printers appear after the local hook registers them.
+
+If Shopify created an order before routing completed, use **Check recent orders** in the embedded app to scan the latest orders and queue any matching packing slips that were missed.
 
 ## Development
 
