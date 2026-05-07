@@ -80,8 +80,6 @@ type FulfillmentOrderLineItem = {
     sku: string | null;
     variantTitle: string | null;
     quantity: number | null;
-    variant: { sku: string | null; barcode: string | null } | null;
-    product: { title: string | null } | null;
   } | null;
 };
 
@@ -112,8 +110,6 @@ type OrderPrinterOrder = {
       sku: string | null;
       variantTitle: string | null;
       quantity: number | null;
-      variant: { sku: string | null; barcode: string | null } | null;
-      product: { title: string | null } | null;
     }[];
   };
   fulfillmentOrders: {
@@ -186,13 +182,6 @@ const ORDER_QUERY = `#graphql
           sku
           variantTitle
           quantity
-          variant {
-            sku
-            barcode
-          }
-          product {
-            title
-          }
         }
       }
       fulfillmentOrders(first: 25) {
@@ -216,13 +205,6 @@ const ORDER_QUERY = `#graphql
                 sku
                 variantTitle
                 quantity
-                variant {
-                  sku
-                  barcode
-                }
-                product {
-                  title
-                }
               }
             }
           }
@@ -766,13 +748,9 @@ function fulfillmentLineToPackingLine(line: FulfillmentOrderLineItem) {
     line.remainingQuantity ?? line.totalQuantity ?? orderLine?.quantity ?? 0;
 
   return {
-    title:
-      orderLine?.product?.title ||
-      orderLine?.title ||
-      orderLine?.name ||
-      "Untitled item",
+    title: orderLine?.title || orderLine?.name || "Untitled item",
     variantTitle: orderLine?.variantTitle ?? null,
-    sku: orderLine?.sku || orderLine?.variant?.sku || null,
+    sku: orderLine?.sku || null,
     quantity,
   };
 }
@@ -781,9 +759,9 @@ function orderLineToPackingLine(
   line: OrderPrinterOrder["lineItems"]["nodes"][number],
 ) {
   return {
-    title: line.product?.title || line.title || line.name || "Untitled item",
+    title: line.title || line.name || "Untitled item",
     variantTitle: line.variantTitle ?? null,
-    sku: line.sku || line.variant?.sku || null,
+    sku: line.sku || null,
     quantity: line.quantity ?? 0,
   };
 }
