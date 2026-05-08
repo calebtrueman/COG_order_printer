@@ -161,6 +161,14 @@ type OrderListNode = {
   };
 };
 
+type OrderListConnection = {
+  nodes: OrderListNode[];
+  pageInfo: {
+    hasNextPage: boolean;
+    endCursor: string | null;
+  };
+};
+
 export type ReprintOrder = {
   id: string;
   name: string;
@@ -632,8 +640,12 @@ const ORDER_QUERY = `#graphql
 `;
 
 const ORDER_LIST_QUERY = `#graphql
-  query OrderPrinterOrderList($first: Int!, $query: String, $reverse: Boolean!) {
-    orders(first: $first, sortKey: CREATED_AT, reverse: $reverse, query: $query) {
+  query OrderPrinterOrderList($first: Int!, $after: String, $query: String, $reverse: Boolean!) {
+    orders(first: $first, after: $after, sortKey: CREATED_AT, reverse: $reverse, query: $query) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
       nodes {
         id
         name
@@ -645,7 +657,7 @@ const ORDER_LIST_QUERY = `#graphql
           city
           provinceCode
         }
-        fulfillmentOrders(first: 25) {
+        fulfillmentOrders(first: 10) {
           nodes {
             id
             status
@@ -656,21 +668,10 @@ const ORDER_LIST_QUERY = `#graphql
                 name
               }
             }
-            lineItems(first: 100) {
+            lineItems(first: 25) {
               nodes {
                 totalQuantity
                 remainingQuantity
-                lineItem {
-                  title
-                  name
-                  sku
-                  variantTitle
-                  quantity
-                  image {
-                    url
-                    altText
-                  }
-                }
               }
             }
           }
@@ -1233,9 +1234,7 @@ export async function loadDashboard(
         orderBy: { createdAt: "desc" },
         take: 20,
       }),
-      options.includeReprintOrders
-        ? listReprintableOrders(admin, shop)
-        : Promise.resolve([]),
+      loadReprintOrdersForDashboard(admin, shop, options.includeReprintOrders),
     ]);
 
   return {
@@ -1401,6 +1400,59 @@ function reprintOrderSummary(
   };
 }
 
+async function fetchOrderListPages({
+  admin,
+  query,
+  reverse,
+  limit,
+  pageSize = 10,
+}: {
+  admin: AdminGraphqlClient;
+  query: string;
+  reverse: boolean;
+  limit: number;
+  pageSize?: number;
+}): Promise<OrderListNode[]> {
+  const orders: OrderListNode[] = [];
+  let after: string | null = null;
+
+  while (orders.length < limit) {
+    const first = Math.min(pageSize, limit - orders.length);
+    const data: { orders: OrderListConnection } = await graphqlJson(
+      admin,
+      ORDER_LIST_QUERY,
+      { first, after, query, reverse },
+    );
+
+    orders.push(...data.orders.nodes);
+
+    if (!data.orders.pageInfo.hasNextPage || !data.orders.pageInfo.endCursor) {
+      break;
+    }
+
+    after = data.orders.pageInfo.endCursor;
+  }
+
+  return orders;
+}
+
+async function loadReprintOrdersForDashboard(
+  admin: AdminGraphqlClient,
+  shop: string,
+  includeReprintOrders?: boolean,
+) {
+  if (!includeReprintOrders) {
+    return [];
+  }
+
+  try {
+    return await listReprintableOrders(admin, shop);
+  } catch (error) {
+    console.error("Unable to load reprintable orders.", error);
+    return [];
+  }
+}
+
 async function getEnabledRule(shop: string) {
   return prisma.printerRule.findFirst({
     where: { shop, enabled: true, printerProvider: LOCAL_AGENT_PROVIDER },
@@ -1419,13 +1471,14 @@ export async function listReprintableOrders(
     return [];
   }
 
-  const data = await graphqlJson<{ orders: { nodes: OrderListNode[] } }>(
+  const orders = await fetchOrderListPages({
     admin,
-    ORDER_LIST_QUERY,
-    { first: limit, query: "status:open", reverse: true },
-  );
+    query: "status:open",
+    reverse: true,
+    limit,
+  });
 
-  return data.orders.nodes
+  return orders
     .map((order) => ({
       order,
       matchingOrders: matchingOpenFulfillmentOrders(order, rule.locationId),
@@ -1473,12 +1526,13 @@ export async function syncMissedAutoPrints(
   }
 
   const query = `status:open created_at:>${latestAutoPrint.orderCreatedAt.toISOString()}`;
-  const data = await graphqlJson<{ orders: { nodes: OrderListNode[] } }>(
+  const orders = await fetchOrderListPages({
     admin,
-    ORDER_LIST_QUERY,
-    { first: limit, query, reverse: false },
-  );
-  const candidates = data.orders.nodes.filter(
+    query,
+    reverse: false,
+    limit,
+  });
+  const candidates = orders.filter(
     (order) => matchingOpenFulfillmentOrders(order, rule.locationId).length,
   );
   const results = [];
