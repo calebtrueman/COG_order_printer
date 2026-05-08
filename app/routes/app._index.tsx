@@ -11,7 +11,12 @@ import {
   useRouteError,
 } from "react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, KeyboardEvent, PointerEvent } from "react";
+import type {
+  CSSProperties,
+  ChangeEvent,
+  KeyboardEvent,
+  PointerEvent,
+} from "react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import {
@@ -38,11 +43,40 @@ type TemplateField = {
   sample: string;
 };
 
-const CANVAS_WIDTH = 816;
-const CANVAS_HEIGHT = 1056;
+const DEFAULT_PAGE_WIDTH = 816;
+const DEFAULT_PAGE_HEIGHT = 1056;
 const GRID_SIZE = 8;
 const MIN_BLOCK_WIDTH = 32;
 const MIN_BLOCK_HEIGHT = 24;
+const PAGE_SIZE_OPTIONS = [
+  { value: "letter", label: "Letter", width: 816, height: 1056 },
+  { value: "a4", label: "A4", width: 794, height: 1123 },
+  { value: "label-4x6", label: "4 x 6 Label", width: 384, height: 576 },
+  { value: "custom", label: "Custom", width: 816, height: 1056 },
+];
+const FONT_FAMILIES = [
+  { label: "Arial", value: "Arial, Helvetica, sans-serif" },
+  { label: "Helvetica", value: "Helvetica, Arial, sans-serif" },
+  { label: "Georgia", value: "Georgia, serif" },
+  { label: "Times New Roman", value: "'Times New Roman', Times, serif" },
+  { label: "Courier New", value: "'Courier New', Courier, monospace" },
+  { label: "Verdana", value: "Verdana, Geneva, sans-serif" },
+  { label: "Tahoma", value: "Tahoma, Geneva, sans-serif" },
+];
+const DEFAULT_ITEM_COLUMNS = [
+  { key: "quantity", label: "Qty", enabled: true, width: 54 },
+  { key: "image", label: "Image", enabled: true, width: 72 },
+  { key: "title", label: "Product", enabled: true, width: 260 },
+  { key: "variant", label: "Variant", enabled: false, width: 140 },
+  { key: "sku", label: "SKU", enabled: true, width: 120 },
+] as const;
+type ItemColumnKey = (typeof DEFAULT_ITEM_COLUMNS)[number]["key"];
+type EditorItemColumn = {
+  key: ItemColumnKey;
+  label: string;
+  enabled: boolean;
+  width: number;
+};
 
 const TEMPLATE_FIELD_GROUPS: { label: string; fields: TemplateField[] }[] = [
   {
@@ -218,6 +252,10 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Math.round(value)));
 }
 
+function clampFloat(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, Math.round(value * 100) / 100));
+}
+
 type ResizeHandle = "nw" | "ne" | "sw" | "se";
 
 type CanvasOperation =
@@ -241,10 +279,40 @@ const RESIZE_HANDLES: ResizeHandle[] = ["nw", "ne", "sw", "se"];
 
 function copyDesign(design: TemplateDesign): TemplateDesign {
   const next = JSON.parse(JSON.stringify(design)) as TemplateDesign;
+  const page = normalizePageSettings(next.page);
 
   return {
     ...next,
-    blocks: next.blocks.map(normalizeBlockGeometry),
+    page,
+    blocks: next.blocks.map((block) => normalizeBlockGeometry(block, page)),
+  };
+}
+
+function normalizePageSettings(
+  page: TemplateDesign["page"],
+): TemplateDesign["page"] {
+  const preset = PAGE_SIZE_OPTIONS.find(
+    (option) => option.value === page?.size,
+  );
+  const width = clamp(
+    Number(page?.width || preset?.width || DEFAULT_PAGE_WIDTH),
+    288,
+    1344,
+  );
+  const height = clamp(
+    Number(page?.height || preset?.height || DEFAULT_PAGE_HEIGHT),
+    288,
+    1728,
+  );
+
+  return {
+    size: page?.size || preset?.value || "letter",
+    width,
+    height,
+    marginTop: clamp(Number(page?.marginTop ?? 36), 0, 192),
+    marginRight: clamp(Number(page?.marginRight ?? 36), 0, 192),
+    marginBottom: clamp(Number(page?.marginBottom ?? 36), 0, 192),
+    marginLeft: clamp(Number(page?.marginLeft ?? 36), 0, 192),
   };
 }
 
@@ -260,6 +328,25 @@ function fieldFor(value: string | undefined) {
 
 function fieldSample(value: string | undefined) {
   return fieldFor(value)?.sample || "";
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function tokenForField(field: string) {
+  return `{{${field}}}`;
+}
+
+function snapMentions(value: string) {
+  return TEMPLATE_FIELDS.reduce((current, field) => {
+    const pattern = new RegExp(
+      `@${escapeRegExp(field.label)}(?=$|\\s|[.,;:)])`,
+      "gi",
+    );
+
+    return current.replace(pattern, tokenForField(field.value));
+  }, value);
 }
 
 function replaceSampleTokens(text: string | undefined) {
@@ -278,6 +365,45 @@ function lineBreaks(value: string) {
       {index < lines.length - 1 ? <br /> : null}
     </span>
   ));
+}
+
+function richTextPreview(value: string | undefined) {
+  const text = replaceSampleTokens(value);
+  const tokenPattern = /\{\{\s*([\w.]+)\s*\}\}/g;
+  const nodes = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenPattern.exec(String(value || "")))) {
+    const before = String(value || "").slice(cursor, match.index);
+
+    if (before) {
+      nodes.push(
+        <span key={`t-${cursor}`}>
+          {lineBreaks(replaceSampleTokens(before))}
+        </span>,
+      );
+    }
+
+    const field = fieldFor(match[1]);
+
+    nodes.push(
+      <span className="variable-chip" key={`v-${match.index}`}>
+        {field?.sample || field?.label || match[1]}
+      </span>,
+    );
+    cursor = match.index + match[0].length;
+  }
+
+  const rest = String(value || "").slice(cursor);
+
+  if (rest) {
+    nodes.push(
+      <span key={`t-${cursor}`}>{lineBreaks(replaceSampleTokens(rest))}</span>,
+    );
+  }
+
+  return nodes.length ? nodes : lineBreaks(text);
 }
 
 function blockLabel(block: TemplateBlock) {
@@ -318,22 +444,69 @@ function normalizeHex(value: string | undefined, fallback: string) {
   return value && /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback;
 }
 
-function normalizeBlockGeometry(block: TemplateBlock): TemplateBlock {
-  const w = clamp(Number(block.w) || 220, MIN_BLOCK_WIDTH, CANVAS_WIDTH);
-  const h = clamp(Number(block.h) || 56, MIN_BLOCK_HEIGHT, CANVAS_HEIGHT);
+function normalizeFontFamily(value: string | undefined) {
+  return FONT_FAMILIES.some((font) => font.value === value)
+    ? value
+    : FONT_FAMILIES[0].value;
+}
+
+function normalizeItemColumns(
+  columns: TemplateBlock["itemColumns"],
+): EditorItemColumn[] {
+  const incoming = Array.isArray(columns) ? columns : [];
+  const normalized = incoming
+    .map((column) => {
+      const fallback = DEFAULT_ITEM_COLUMNS.find(
+        (item) => item.key === column.key,
+      );
+
+      if (!fallback) {
+        return null;
+      }
+
+      return {
+        key: fallback.key,
+        label: column.label || fallback.label,
+        enabled: column.enabled !== false,
+        width: clamp(Number(column.width || fallback.width), 32, 420),
+      };
+    })
+    .filter((column): column is EditorItemColumn => Boolean(column));
+  const seen = new Set(normalized.map((column) => column.key));
+
+  for (const column of DEFAULT_ITEM_COLUMNS) {
+    if (!seen.has(column.key)) {
+      normalized.push({ ...column });
+    }
+  }
+
+  return normalized;
+}
+
+function normalizeBlockGeometry(
+  block: TemplateBlock,
+  page = { width: DEFAULT_PAGE_WIDTH, height: DEFAULT_PAGE_HEIGHT },
+): TemplateBlock {
+  const w = clamp(Number(block.w) || 220, MIN_BLOCK_WIDTH, page.width);
+  const h = clamp(Number(block.h) || 56, MIN_BLOCK_HEIGHT, page.height);
 
   return {
     ...block,
-    x: clamp(Number(block.x) || 0, 0, CANVAS_WIDTH - w),
-    y: clamp(Number(block.y) || 0, 0, CANVAS_HEIGHT - h),
+    x: clamp(Number(block.x) || 0, 0, page.width - w),
+    y: clamp(Number(block.y) || 0, 0, page.height - h),
     w,
     h,
     fontSize: clamp(Number(block.fontSize) || 12, 8, 72),
+    fontFamily: normalizeFontFamily(block.fontFamily),
     fontWeight: block.fontWeight === "700" ? "700" : "400",
     align:
       block.align === "center" || block.align === "right"
         ? block.align
         : "left",
+    italic: block.italic === true,
+    underline: block.underline === true,
+    uppercase: block.uppercase === true,
+    lineHeight: clampFloat(Number(block.lineHeight || 1.4), 0.8, 2.4),
     color: normalizeHex(block.color, "#111827"),
     background:
       block.background === "transparent"
@@ -343,6 +516,7 @@ function normalizeBlockGeometry(block: TemplateBlock): TemplateBlock {
     padding: clamp(Number(block.padding) || 0, 0, 48),
     showImages: block.showImages !== false,
     showSku: block.showSku !== false,
+    itemColumns: normalizeItemColumns(block.itemColumns),
   };
 }
 
@@ -352,8 +526,13 @@ function previewStyle(block: TemplateBlock): CSSProperties {
     top: block.y,
     width: block.w,
     height: block.h,
+    fontFamily: block.fontFamily,
     fontSize: block.fontSize || 12,
     fontWeight: block.fontWeight || "400",
+    fontStyle: block.italic ? "italic" : "normal",
+    lineHeight: block.lineHeight || 1.4,
+    textDecoration: block.underline ? "underline" : "none",
+    textTransform: block.uppercase ? "uppercase" : "none",
     textAlign: block.align || "left",
     color: block.color || "#111827",
     background:
@@ -369,34 +548,41 @@ function createTemplateBlock(
   type: TemplateBlock["type"],
   field: string,
   index: number,
+  page: TemplateDesign["page"],
 ): TemplateBlock {
   const offset = (index % 8) * 12;
   const selectedField = fieldFor(field);
 
-  return normalizeBlockGeometry({
-    id: `${type}-${Date.now()}-${index}`,
-    type,
-    x: 48 + offset,
-    y: 48 + offset,
-    w: type === "items" ? 680 : type === "image" ? 150 : 240,
-    h: type === "items" ? 330 : type === "image" ? 130 : 64,
-    field: type === "field" || type === "image" ? field : "",
-    text:
-      type === "text"
-        ? "Custom text with {{order.name}} or any field token"
-        : "",
-    imageUrl: "",
-    label: type === "field" ? selectedField?.label || "Order field" : "",
-    fontSize: type === "text" ? 14 : 12,
-    fontWeight: type === "field" ? "700" : "400",
-    align: "left",
-    color: "#111827",
-    background: "transparent",
-    border: false,
-    padding: 0,
-    showImages: true,
-    showSku: true,
-  });
+  return normalizeBlockGeometry(
+    {
+      id: `${type}-${Date.now()}-${index}`,
+      type,
+      x: 48 + offset,
+      y: 48 + offset,
+      w: type === "items" ? 680 : type === "image" ? 150 : 240,
+      h: type === "items" ? 330 : type === "image" ? 130 : 64,
+      field: type === "field" || type === "image" ? field : "",
+      text: type === "text" ? "Custom text with @Order # or any variable" : "",
+      imageUrl: "",
+      label: type === "field" ? selectedField?.label || "Order field" : "",
+      fontSize: type === "text" ? 14 : 12,
+      fontFamily: FONT_FAMILIES[0].value,
+      fontWeight: type === "field" ? "700" : "400",
+      italic: false,
+      underline: false,
+      uppercase: false,
+      lineHeight: 1.4,
+      align: "left",
+      color: "#111827",
+      background: "transparent",
+      border: false,
+      padding: 0,
+      showImages: true,
+      showSku: true,
+      itemColumns: DEFAULT_ITEM_COLUMNS.map((column) => ({ ...column })),
+    },
+    page,
+  );
 }
 
 function resizeBlock(
@@ -405,6 +591,7 @@ function resizeBlock(
   deltaX: number,
   deltaY: number,
   snapToGrid: boolean,
+  page: TemplateDesign["page"],
 ) {
   const right = original.x + original.w;
   const bottom = original.y + original.h;
@@ -417,7 +604,7 @@ function resizeBlock(
     w = clamp(
       snapValue(original.w + deltaX, snapToGrid),
       MIN_BLOCK_WIDTH,
-      CANVAS_WIDTH - original.x,
+      page.width - original.x,
     );
   }
 
@@ -425,7 +612,7 @@ function resizeBlock(
     h = clamp(
       snapValue(original.h + deltaY, snapToGrid),
       MIN_BLOCK_HEIGHT,
-      CANVAS_HEIGHT - original.y,
+      page.height - original.y,
     );
   }
 
@@ -447,39 +634,62 @@ function resizeBlock(
     h = bottom - y;
   }
 
-  return normalizeBlockGeometry({ ...original, x, y, w, h });
+  return normalizeBlockGeometry({ ...original, x, y, w, h }, page);
 }
 
 function SampleItemsTable({ block }: { block: TemplateBlock }) {
+  const columns = normalizeItemColumns(block.itemColumns).filter(
+    (column) =>
+      column.enabled &&
+      (column.key !== "image" || block.showImages !== false) &&
+      (column.key !== "sku" || block.showSku !== false),
+  );
+
   return (
     <table className="template-sample-table">
       <thead>
         <tr>
-          <th>Qty</th>
-          {block.showImages !== false ? <th>Image</th> : null}
-          <th>Product</th>
+          {columns.map((column) => (
+            <th key={column.key} style={{ width: column.width }}>
+              {column.label}
+            </th>
+          ))}
         </tr>
       </thead>
       <tbody>
         {SAMPLE_LINES.map((line) => (
           <tr key={line.sku}>
-            <td>{line.quantity}</td>
-            {block.showImages !== false ? (
-              <td>
-                <span className="sample-product-image" />
-              </td>
-            ) : null}
-            <td>
-              <strong>{line.title}</strong>
-              {block.showSku !== false ? (
-                <span className="template-sample-meta">SKU: {line.sku}</span>
-              ) : null}
-            </td>
+            {columns.map((column) => (
+              <td key={column.key}>{renderSampleItemCell(column.key, line)}</td>
+            ))}
           </tr>
         ))}
       </tbody>
     </table>
   );
+}
+
+function renderSampleItemCell(
+  key: ItemColumnKey,
+  line: (typeof SAMPLE_LINES)[number],
+) {
+  if (key === "quantity") {
+    return line.quantity;
+  }
+
+  if (key === "image") {
+    return <span className="sample-product-image" />;
+  }
+
+  if (key === "variant") {
+    return "Default";
+  }
+
+  if (key === "sku") {
+    return <span className="template-sample-meta">{line.sku}</span>;
+  }
+
+  return <strong>{line.title}</strong>;
 }
 
 function TemplateBlockPreview({ block }: { block: TemplateBlock }) {
@@ -504,17 +714,10 @@ function TemplateBlockPreview({ block }: { block: TemplateBlock }) {
   }
 
   if (block.type === "text") {
-    return <span>{lineBreaks(replaceSampleTokens(block.text))}</span>;
+    return <span>{richTextPreview(block.text)}</span>;
   }
 
-  return (
-    <>
-      {block.label ? (
-        <span className="template-preview-label">{block.label}</span>
-      ) : null}
-      <span>{lineBreaks(fieldSample(block.field))}</span>
-    </>
-  );
+  return <span>{lineBreaks(fieldSample(block.field))}</span>;
 }
 
 function TemplateDesigner({
@@ -562,14 +765,48 @@ function TemplateDesigner({
       ...current,
       blocks: current.blocks.map((block) =>
         block.id === id
-          ? normalizeBlockGeometry({ ...block, ...patch })
+          ? normalizeBlockGeometry({ ...block, ...patch }, current.page)
           : block,
       ),
     }));
   }
 
+  function updatePage(patch: Partial<TemplateDesign["page"]>) {
+    setDesign((current) => {
+      const nextPage = normalizePageSettings({ ...current.page, ...patch });
+
+      return {
+        ...current,
+        page: nextPage,
+        blocks: current.blocks.map((block) =>
+          normalizeBlockGeometry(block, nextPage),
+        ),
+      };
+    });
+  }
+
+  function applyPageSize(value: string) {
+    const preset = PAGE_SIZE_OPTIONS.find((option) => option.value === value);
+
+    if (!preset || value === "custom") {
+      updatePage({ size: "custom" });
+      return;
+    }
+
+    updatePage({
+      size: preset.value,
+      width: preset.width,
+      height: preset.height,
+    });
+  }
+
   function addBlock(type: TemplateBlock["type"], field = "order.name") {
-    const block = createTemplateBlock(type, field, design.blocks.length);
+    const block = createTemplateBlock(
+      type,
+      field,
+      design.blocks.length,
+      design.page,
+    );
 
     setDesign((current) => ({
       ...current,
@@ -583,12 +820,15 @@ function TemplateDesigner({
       return;
     }
 
-    const duplicate = normalizeBlockGeometry({
-      ...selectedBlock,
-      id: `${selectedBlock.type}-${Date.now()}`,
-      x: selectedBlock.x + 16,
-      y: selectedBlock.y + 16,
-    });
+    const duplicate = normalizeBlockGeometry(
+      {
+        ...selectedBlock,
+        id: `${selectedBlock.type}-${Date.now()}`,
+        x: selectedBlock.x + 16,
+        y: selectedBlock.y + 16,
+      },
+      design.page,
+    );
 
     setDesign((current) => ({
       ...current,
@@ -646,7 +886,7 @@ function TemplateDesigner({
     }
 
     const rect = canvas.getBoundingClientRect();
-    const scale = rect.width / CANVAS_WIDTH || 1;
+    const scale = rect.width / design.page.width || 1;
 
     return {
       x: (event.clientX - rect.left) / scale,
@@ -713,12 +953,12 @@ function TemplateDesigner({
         x: clamp(
           snapValue(operation.original.x + deltaX, snapToGrid),
           0,
-          CANVAS_WIDTH - operation.original.w,
+          design.page.width - operation.original.w,
         ),
         y: clamp(
           snapValue(operation.original.y + deltaY, snapToGrid),
           0,
-          CANVAS_HEIGHT - operation.original.h,
+          design.page.height - operation.original.h,
         ),
       });
       return;
@@ -730,6 +970,7 @@ function TemplateDesigner({
       deltaX,
       deltaY,
       snapToGrid,
+      design.page,
     );
 
     updateBlock(operation.id, resized);
@@ -781,6 +1022,95 @@ function TemplateDesigner({
     });
   }
 
+  function handleTextAreaKeyDown(
+    event: KeyboardEvent<HTMLTextAreaElement>,
+    block: TemplateBlock,
+  ) {
+    if (event.key !== "Tab") {
+      return;
+    }
+
+    event.preventDefault();
+    const target = event.currentTarget;
+    const start = target.selectionStart;
+    const end = target.selectionEnd;
+    const nextText = `${target.value.slice(0, start)}  ${target.value.slice(end)}`;
+
+    updateBlock(block.id, { text: nextText });
+    window.requestAnimationFrame(() => {
+      target.selectionStart = start + 2;
+      target.selectionEnd = start + 2;
+    });
+  }
+
+  function handleTextChange(
+    event: ChangeEvent<HTMLTextAreaElement>,
+    block: TemplateBlock,
+  ) {
+    const target = event.currentTarget;
+    const cursor = target.selectionStart;
+    const nextText = snapMentions(target.value);
+    const nextCursor = snapMentions(target.value.slice(0, cursor)).length;
+
+    updateBlock(block.id, { text: nextText });
+
+    if (nextText !== target.value) {
+      window.requestAnimationFrame(() => {
+        target.selectionStart = nextCursor;
+        target.selectionEnd = nextCursor;
+      });
+    }
+  }
+
+  function updateItemColumn(
+    key: ItemColumnKey,
+    patch: Partial<ReturnType<typeof normalizeItemColumns>[number]>,
+  ) {
+    if (!selectedBlock) {
+      return;
+    }
+
+    updateBlock(selectedBlock.id, {
+      itemColumns: normalizeItemColumns(selectedBlock.itemColumns).map(
+        (column) => (column.key === key ? { ...column, ...patch } : column),
+      ),
+    });
+  }
+
+  function toggleItemColumn(key: ItemColumnKey, enabled: boolean) {
+    if (!selectedBlock) {
+      return;
+    }
+
+    updateBlock(selectedBlock.id, {
+      itemColumns: normalizeItemColumns(selectedBlock.itemColumns).map(
+        (column) => (column.key === key ? { ...column, enabled } : column),
+      ),
+      ...(key === "image" ? { showImages: enabled } : {}),
+      ...(key === "sku" ? { showSku: enabled } : {}),
+    });
+  }
+
+  function moveItemColumn(key: ItemColumnKey, direction: -1 | 1) {
+    if (!selectedBlock) {
+      return;
+    }
+
+    const columns = normalizeItemColumns(selectedBlock.itemColumns);
+    const index = columns.findIndex((column) => column.key === key);
+    const targetIndex = index + direction;
+
+    if (index < 0 || targetIndex < 0 || targetIndex >= columns.length) {
+      return;
+    }
+
+    const next = [...columns];
+    const [column] = next.splice(index, 1);
+
+    next.splice(targetIndex, 0, column);
+    updateBlock(selectedBlock.id, { itemColumns: next });
+  }
+
   return (
     <Form method="post" className="template-editor">
       <input type="hidden" name="intent" value="save-template" />
@@ -816,6 +1146,65 @@ function TemplateDesigner({
             Save template
           </button>
         </div>
+      </div>
+
+      <div className="page-settings">
+        <label>
+          <span>Page size</span>
+          <select
+            value={design.page.size || "custom"}
+            onChange={(event) => applyPageSize(event.currentTarget.value)}
+          >
+            {PAGE_SIZE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Width</span>
+          <input
+            min="288"
+            type="number"
+            value={design.page.width}
+            onChange={(event) =>
+              updatePage({
+                size: "custom",
+                width: Number(event.currentTarget.value),
+              })
+            }
+          />
+        </label>
+        <label>
+          <span>Height</span>
+          <input
+            min="288"
+            type="number"
+            value={design.page.height}
+            onChange={(event) =>
+              updatePage({
+                size: "custom",
+                height: Number(event.currentTarget.value),
+              })
+            }
+          />
+        </label>
+        {(
+          ["marginTop", "marginRight", "marginBottom", "marginLeft"] as const
+        ).map((key) => (
+          <label key={key}>
+            <span>{key.replace("margin", "")}</span>
+            <input
+              min="0"
+              type="number"
+              value={design.page[key] || 0}
+              onChange={(event) =>
+                updatePage({ [key]: Number(event.currentTarget.value) })
+              }
+            />
+          </label>
+        ))}
       </div>
 
       <div className="template-workspace">
@@ -939,8 +1328,8 @@ function TemplateDesigner({
             <div
               className="template-canvas-space"
               style={{
-                width: CANVAS_WIDTH * zoom,
-                height: CANVAS_HEIGHT * zoom,
+                width: design.page.width * zoom,
+                height: design.page.height * zoom,
               }}
             >
               <div
@@ -950,11 +1339,20 @@ function TemplateDesigner({
                 onPointerUp={stopCanvasOperation}
                 ref={canvasRef}
                 style={{
-                  height: CANVAS_HEIGHT,
+                  height: design.page.height,
                   transform: `scale(${zoom})`,
-                  width: CANVAS_WIDTH,
+                  width: design.page.width,
                 }}
               >
+                <div
+                  className="margin-guide"
+                  style={{
+                    bottom: design.page.marginBottom || 0,
+                    left: design.page.marginLeft || 0,
+                    right: design.page.marginRight || 0,
+                    top: design.page.marginTop || 0,
+                  }}
+                />
                 {design.blocks.map((block) => {
                   const selected = block.id === selectedId;
 
@@ -1032,29 +1430,15 @@ function TemplateDesigner({
                   </select>
                 </label>
               ) : null}
-              {selectedBlock.type === "field" ? (
-                <label>
-                  <span>Label</span>
-                  <input
-                    value={selectedBlock.label || ""}
-                    onChange={(event) =>
-                      updateBlock(selectedBlock.id, {
-                        label: event.currentTarget.value,
-                      })
-                    }
-                  />
-                </label>
-              ) : null}
               {selectedBlock.type === "text" ? (
                 <label>
                   <span>Text</span>
                   <textarea
                     value={selectedBlock.text || ""}
-                    onChange={(event) =>
-                      updateBlock(selectedBlock.id, {
-                        text: event.currentTarget.value,
-                      })
+                    onKeyDown={(event) =>
+                      handleTextAreaKeyDown(event, selectedBlock)
                     }
+                    onChange={(event) => handleTextChange(event, selectedBlock)}
                   />
                 </label>
               ) : null}
@@ -1073,7 +1457,7 @@ function TemplateDesigner({
                     ))}
                   </select>
                   <button type="button" onClick={insertFieldToken}>
-                    Insert field
+                    Insert variable
                   </button>
                 </div>
               ) : null}
@@ -1091,35 +1475,67 @@ function TemplateDesigner({
                 </label>
               ) : null}
               {selectedBlock.type === "items" ? (
-                <div className="option-grid">
-                  <label className="checkbox-row compact-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={selectedBlock.showImages !== false}
-                      onChange={(event) =>
-                        updateBlock(selectedBlock.id, {
-                          showImages: event.currentTarget.checked,
-                        })
-                      }
-                    />
-                    <span>Images</span>
-                  </label>
-                  <label className="checkbox-row compact-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={selectedBlock.showSku !== false}
-                      onChange={(event) =>
-                        updateBlock(selectedBlock.id, {
-                          showSku: event.currentTarget.checked,
-                        })
-                      }
-                    />
-                    <span>SKUs</span>
-                  </label>
+                <div className="item-column-editor">
+                  <div className="field-label">Item columns</div>
+                  {normalizeItemColumns(selectedBlock.itemColumns).map(
+                    (column, index, columns) => (
+                      <div className="item-column-row" key={column.key}>
+                        <label className="checkbox-row compact-checkbox">
+                          <input
+                            type="checkbox"
+                            checked={column.enabled}
+                            onChange={(event) =>
+                              toggleItemColumn(
+                                column.key,
+                                event.currentTarget.checked,
+                              )
+                            }
+                          />
+                          <span>{column.key}</span>
+                        </label>
+                        <input
+                          aria-label={`${column.key} label`}
+                          value={column.label}
+                          onChange={(event) =>
+                            updateItemColumn(column.key, {
+                              label: event.currentTarget.value,
+                            })
+                          }
+                        />
+                        <input
+                          aria-label={`${column.key} width`}
+                          min="32"
+                          type="number"
+                          value={column.width}
+                          onChange={(event) =>
+                            updateItemColumn(column.key, {
+                              width: Number(event.currentTarget.value),
+                            })
+                          }
+                        />
+                        <div className="item-column-actions">
+                          <button
+                            type="button"
+                            disabled={index === 0}
+                            onClick={() => moveItemColumn(column.key, -1)}
+                          >
+                            Up
+                          </button>
+                          <button
+                            type="button"
+                            disabled={index === columns.length - 1}
+                            onClick={() => moveItemColumn(column.key, 1)}
+                          >
+                            Down
+                          </button>
+                        </div>
+                      </div>
+                    ),
+                  )}
                 </div>
               ) : null}
               <div className="geometry-grid">
-                {(["x", "y", "w", "h", "fontSize"] as const).map((key) => (
+                {(["x", "y", "w", "h"] as const).map((key) => (
                   <label key={key}>
                     <span>{key}</span>
                     <input
@@ -1134,6 +1550,138 @@ function TemplateDesigner({
                     />
                   </label>
                 ))}
+              </div>
+              <div className="typography-grid">
+                <label className="wide-control">
+                  <span>Font</span>
+                  <select
+                    value={selectedBlock.fontFamily || FONT_FAMILIES[0].value}
+                    onChange={(event) =>
+                      updateBlock(selectedBlock.id, {
+                        fontFamily: event.currentTarget.value,
+                      })
+                    }
+                  >
+                    {FONT_FAMILIES.map((font) => (
+                      <option key={font.value} value={font.value}>
+                        {font.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Size</span>
+                  <input
+                    min="8"
+                    type="number"
+                    value={selectedBlock.fontSize || 12}
+                    onChange={(event) =>
+                      updateBlock(selectedBlock.id, {
+                        fontSize: Number(event.currentTarget.value),
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  <span>Line</span>
+                  <input
+                    max="2.4"
+                    min="0.8"
+                    step="0.1"
+                    type="number"
+                    value={selectedBlock.lineHeight || 1.4}
+                    onChange={(event) =>
+                      updateBlock(selectedBlock.id, {
+                        lineHeight: Number(event.currentTarget.value),
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  <span>Weight</span>
+                  <select
+                    value={selectedBlock.fontWeight || "400"}
+                    onChange={(event) =>
+                      updateBlock(selectedBlock.id, {
+                        fontWeight: event.currentTarget.value,
+                      })
+                    }
+                  >
+                    <option value="400">Regular</option>
+                    <option value="700">Bold</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Align</span>
+                  <select
+                    value={selectedBlock.align || "left"}
+                    onChange={(event) =>
+                      updateBlock(selectedBlock.id, {
+                        align: event.currentTarget
+                          .value as TemplateBlock["align"],
+                      })
+                    }
+                  >
+                    <option value="left">Left</option>
+                    <option value="center">Center</option>
+                    <option value="right">Right</option>
+                  </select>
+                </label>
+              </div>
+              <div className="format-button-row">
+                <button
+                  aria-pressed={selectedBlock.fontWeight === "700"}
+                  className={selectedBlock.fontWeight === "700" ? "active" : ""}
+                  title="Bold"
+                  type="button"
+                  onClick={() =>
+                    updateBlock(selectedBlock.id, {
+                      fontWeight:
+                        selectedBlock.fontWeight === "700" ? "400" : "700",
+                    })
+                  }
+                >
+                  B
+                </button>
+                <button
+                  aria-pressed={selectedBlock.italic === true}
+                  className={selectedBlock.italic ? "active" : ""}
+                  title="Italic"
+                  type="button"
+                  onClick={() =>
+                    updateBlock(selectedBlock.id, {
+                      italic: selectedBlock.italic !== true,
+                    })
+                  }
+                >
+                  I
+                </button>
+                <button
+                  aria-pressed={selectedBlock.underline === true}
+                  className={selectedBlock.underline ? "active" : ""}
+                  title="Underline"
+                  type="button"
+                  onClick={() =>
+                    updateBlock(selectedBlock.id, {
+                      underline: selectedBlock.underline !== true,
+                    })
+                  }
+                >
+                  U
+                </button>
+                <button
+                  aria-pressed={selectedBlock.uppercase === true}
+                  className={selectedBlock.uppercase ? "active" : ""}
+                  title="Uppercase"
+                  type="button"
+                  onClick={() =>
+                    updateBlock(selectedBlock.id, {
+                      uppercase: selectedBlock.uppercase !== true,
+                    })
+                  }
+                >
+                  AA
+                </button>
               </div>
               <div className="style-grid">
                 <label>
@@ -1206,36 +1754,6 @@ function TemplateDesigner({
                     })
                   }
                 />
-              </label>
-              <label>
-                <span>Weight</span>
-                <select
-                  value={selectedBlock.fontWeight || "400"}
-                  onChange={(event) =>
-                    updateBlock(selectedBlock.id, {
-                      fontWeight: event.currentTarget.value,
-                    })
-                  }
-                >
-                  <option value="400">Regular</option>
-                  <option value="700">Bold</option>
-                </select>
-              </label>
-              <label>
-                <span>Align</span>
-                <select
-                  value={selectedBlock.align || "left"}
-                  onChange={(event) =>
-                    updateBlock(selectedBlock.id, {
-                      align: event.currentTarget
-                        .value as TemplateBlock["align"],
-                    })
-                  }
-                >
-                  <option value="left">Left</option>
-                  <option value="center">Center</option>
-                  <option value="right">Right</option>
-                </select>
               </label>
             </>
           ) : (

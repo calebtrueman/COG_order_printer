@@ -170,6 +170,15 @@ export type ReprintOrder = {
 };
 
 export type TemplateBlockType = "field" | "text" | "image" | "items";
+export type ItemColumnKey = "quantity" | "image" | "title" | "variant" | "sku";
+
+export type ItemColumn = {
+  key: ItemColumnKey;
+  label: string;
+  enabled: boolean;
+  width?: number;
+};
+type NormalizedItemColumn = ItemColumn & { width: number };
 
 export type TemplateBlock = {
   id: string;
@@ -183,19 +192,35 @@ export type TemplateBlock = {
   imageUrl?: string;
   label?: string;
   fontSize?: number;
+  fontFamily?: string;
   fontWeight?: string;
   align?: "left" | "center" | "right";
+  italic?: boolean;
+  underline?: boolean;
+  uppercase?: boolean;
+  lineHeight?: number;
   color?: string;
   background?: string;
   border?: boolean;
   padding?: number;
   showImages?: boolean;
   showSku?: boolean;
+  itemColumns?: ItemColumn[];
+};
+
+export type TemplatePage = {
+  size?: string;
+  width: number;
+  height: number;
+  marginTop?: number;
+  marginRight?: number;
+  marginBottom?: number;
+  marginLeft?: number;
 };
 
 export type TemplateDesign = {
   version: 1;
-  page: { width: number; height: number };
+  page: TemplatePage;
   blocks: TemplateBlock[];
 };
 
@@ -223,8 +248,32 @@ type AgentPrinterInput = {
 };
 
 const LOCAL_AGENT_PROVIDER = "local-agent";
-const TEMPLATE_PAGE = { width: 816, height: 1056 };
+const TEMPLATE_PAGE: TemplatePage = {
+  size: "letter",
+  width: 816,
+  height: 1056,
+  marginTop: 36,
+  marginRight: 36,
+  marginBottom: 36,
+  marginLeft: 36,
+};
 const TEMPLATE_STORAGE_PREFIX = "packing-template:";
+const TEMPLATE_FONT_FAMILIES = new Set([
+  "Arial, Helvetica, sans-serif",
+  "Helvetica, Arial, sans-serif",
+  "Georgia, serif",
+  "'Times New Roman', Times, serif",
+  "'Courier New', Courier, monospace",
+  "Verdana, Geneva, sans-serif",
+  "Tahoma, Geneva, sans-serif",
+]);
+const DEFAULT_ITEM_COLUMNS: NormalizedItemColumn[] = [
+  { key: "quantity", label: "Qty", enabled: true, width: 54 },
+  { key: "image", label: "Image", enabled: true, width: 72 },
+  { key: "title", label: "Product", enabled: true, width: 260 },
+  { key: "variant", label: "Variant", enabled: false, width: 140 },
+  { key: "sku", label: "SKU", enabled: true, width: 120 },
+];
 
 const DEFAULT_TEMPLATE_DESIGN: TemplateDesign = {
   version: 1,
@@ -589,7 +638,102 @@ function normalizedColor(value: unknown, fallback = "") {
   return fallback;
 }
 
-function normalizedTemplateBlock(value: unknown): TemplateBlock | null {
+function normalizedFontFamily(value: unknown) {
+  return typeof value === "string" && TEMPLATE_FONT_FAMILIES.has(value)
+    ? value
+    : "Arial, Helvetica, sans-serif";
+}
+
+function normalizedLineHeight(value: unknown) {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    return 1.4;
+  }
+
+  if (parsed > 10) {
+    return Math.min(2.4, Math.max(0.8, Math.round(parsed) / 100));
+  }
+
+  return Math.min(2.4, Math.max(0.8, Math.round(parsed * 100) / 100));
+}
+
+function normalizedTemplatePage(value: unknown): TemplatePage {
+  if (!isRecord(value)) {
+    return TEMPLATE_PAGE;
+  }
+
+  return {
+    size: typeof value.size === "string" ? value.size.slice(0, 40) : "custom",
+    width: boundedNumber(value.width, TEMPLATE_PAGE.width, 288, 1344),
+    height: boundedNumber(value.height, TEMPLATE_PAGE.height, 288, 1728),
+    marginTop: boundedNumber(
+      value.marginTop,
+      TEMPLATE_PAGE.marginTop || 0,
+      0,
+      192,
+    ),
+    marginRight: boundedNumber(
+      value.marginRight,
+      TEMPLATE_PAGE.marginRight || 0,
+      0,
+      192,
+    ),
+    marginBottom: boundedNumber(
+      value.marginBottom,
+      TEMPLATE_PAGE.marginBottom || 0,
+      0,
+      192,
+    ),
+    marginLeft: boundedNumber(
+      value.marginLeft,
+      TEMPLATE_PAGE.marginLeft || 0,
+      0,
+      192,
+    ),
+  };
+}
+
+function normalizedItemColumns(value: unknown): NormalizedItemColumn[] {
+  const known = new Set(DEFAULT_ITEM_COLUMNS.map((column) => column.key));
+  const incoming = Array.isArray(value) ? value : [];
+  const normalized = incoming
+    .filter(isRecord)
+    .map((column) => {
+      const key = column.key;
+
+      if (typeof key !== "string" || !known.has(key as ItemColumnKey)) {
+        return null;
+      }
+
+      const fallback = DEFAULT_ITEM_COLUMNS.find((item) => item.key === key);
+
+      return {
+        key: key as ItemColumnKey,
+        label:
+          typeof column.label === "string" && column.label.trim()
+            ? column.label.trim().slice(0, 40)
+            : fallback?.label || key,
+        enabled: column.enabled !== false,
+        width: boundedNumber(column.width, fallback?.width || 120, 32, 420),
+      };
+    })
+    .filter((column): column is NormalizedItemColumn => Boolean(column));
+  const seen = new Set(normalized.map((column) => column.key));
+
+  for (const column of DEFAULT_ITEM_COLUMNS) {
+    if (!seen.has(column.key)) {
+      normalized.push({ ...column });
+    }
+  }
+
+  return normalized;
+}
+
+function normalizedTemplateBlock(
+  value: unknown,
+  page: TemplatePage,
+): TemplateBlock | null {
   if (!isRecord(value)) {
     return null;
   }
@@ -612,10 +756,10 @@ function normalizedTemplateBlock(value: unknown): TemplateBlock | null {
   return {
     id,
     type,
-    x: boundedNumber(value.x, 36, 0, TEMPLATE_PAGE.width),
-    y: boundedNumber(value.y, 36, 0, TEMPLATE_PAGE.height),
-    w: boundedNumber(value.w, 180, 24, TEMPLATE_PAGE.width),
-    h: boundedNumber(value.h, 48, 18, TEMPLATE_PAGE.height),
+    x: boundedNumber(value.x, 36, 0, page.width),
+    y: boundedNumber(value.y, 36, 0, page.height),
+    w: boundedNumber(value.w, 180, 24, page.width),
+    h: boundedNumber(value.h, 48, 18, page.height),
     field:
       typeof value.field === "string" ? value.field.trim().slice(0, 120) : "",
     text: typeof value.text === "string" ? value.text.slice(0, 2000) : "",
@@ -626,14 +770,20 @@ function normalizedTemplateBlock(value: unknown): TemplateBlock | null {
     label:
       typeof value.label === "string" ? value.label.trim().slice(0, 120) : "",
     fontSize: boundedNumber(value.fontSize, 12, 8, 72),
+    fontFamily: normalizedFontFamily(value.fontFamily),
     fontWeight: value.fontWeight === "700" ? "700" : "400",
     align: normalizedAlign(value.align),
+    italic: value.italic === true,
+    underline: value.underline === true,
+    uppercase: value.uppercase === true,
+    lineHeight: normalizedLineHeight(value.lineHeight),
     color: normalizedColor(value.color, "#111827"),
     background: normalizedColor(value.background, "transparent"),
     border: value.border === true,
     padding: boundedNumber(value.padding, 0, 0, 48),
     showImages: value.showImages !== false,
     showSku: value.showSku !== false,
+    itemColumns: normalizedItemColumns(value.itemColumns),
   };
 }
 
@@ -642,9 +792,10 @@ function normalizeTemplateDesign(value: unknown): TemplateDesign {
     return DEFAULT_TEMPLATE_DESIGN;
   }
 
+  const page = normalizedTemplatePage(value.page);
   const blocks = Array.isArray(value.blocks)
     ? value.blocks
-        .map(normalizedTemplateBlock)
+        .map((block) => normalizedTemplateBlock(block, page))
         .filter((block): block is TemplateBlock => Boolean(block))
         .slice(0, 80)
     : [];
@@ -655,7 +806,7 @@ function normalizeTemplateDesign(value: unknown): TemplateDesign {
 
   return {
     version: 1,
-    page: TEMPLATE_PAGE,
+    page,
     blocks,
   };
 }
@@ -1181,10 +1332,6 @@ function addressLines(address: Address | null) {
   ].filter((line): line is string => Boolean(line));
 }
 
-function htmlLines(lines: string[]) {
-  return lines.map((line) => escapeHtml(line)).join("<br>");
-}
-
 function lineTitle(line: PackingSlipLine) {
   if (!line.variantTitle || line.variantTitle === "Default Title") {
     return line.title;
@@ -1300,14 +1447,23 @@ function replaceTemplateTokens(
   );
 }
 
+function renderTemplateTextValue(value: string) {
+  return escapeHtml(value);
+}
+
 function blockStyle(block: TemplateBlock) {
   return [
     `left:${block.x}px`,
     `top:${block.y}px`,
     `width:${block.w}px`,
     `height:${block.h}px`,
+    `font-family:${normalizedFontFamily(block.fontFamily)}`,
     `font-size:${block.fontSize || 12}px`,
     `font-weight:${block.fontWeight === "700" ? "700" : "400"}`,
+    `font-style:${block.italic ? "italic" : "normal"}`,
+    `text-decoration:${block.underline ? "underline" : "none"}`,
+    `text-transform:${block.uppercase ? "uppercase" : "none"}`,
+    `line-height:${normalizedLineHeight(block.lineHeight)}`,
     `text-align:${block.align || "left"}`,
     `color:${normalizedColor(block.color, "#111827")}`,
     `background:${normalizedColor(block.background, "transparent")}`,
@@ -1317,31 +1473,17 @@ function blockStyle(block: TemplateBlock) {
 }
 
 function renderItemsBlock(block: TemplateBlock, lines: PackingSlipLine[]) {
-  const hasImages =
-    block.showImages !== false && lines.some((line) => line.imageUrl);
-  const showSku = block.showSku !== false;
+  const columns = normalizedItemColumns(block.itemColumns).filter(
+    (column) =>
+      column.enabled &&
+      (column.key !== "image" || block.showImages !== false) &&
+      (column.key !== "sku" || block.showSku !== false),
+  );
   const rows = lines
     .map(
       (line) => `
         <tr>
-          <td class="qty">${escapeHtml(line.quantity)}</td>
-          ${
-            hasImages
-              ? `<td class="item-image-cell">${
-                  line.imageUrl
-                    ? `<img src="${escapeHtml(line.imageUrl)}" alt="${escapeHtml(line.imageAlt || lineTitle(line))}">`
-                    : ""
-                }</td>`
-              : ""
-          }
-          <td>
-            <strong>${escapeHtml(lineTitle(line))}</strong>
-            ${
-              showSku && line.sku
-                ? `<span class="meta">SKU: ${escapeHtml(line.sku)}</span>`
-                : ""
-            }
-          </td>
+          ${columns.map((column) => renderItemCell(column, line)).join("")}
         </tr>
       `,
     )
@@ -1352,15 +1494,46 @@ function renderItemsBlock(block: TemplateBlock, lines: PackingSlipLine[]) {
       <table>
         <thead>
           <tr>
-            <th>Qty</th>
-            ${hasImages ? "<th>Image</th>" : ""}
-            <th>Product</th>
+            ${columns
+              .map(
+                (column) =>
+                  `<th style="${column.width ? `width:${column.width}px` : ""}">${escapeHtml(column.label)}</th>`,
+              )
+              .join("")}
           </tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
   `;
+}
+
+function renderItemCell(column: ItemColumn, line: PackingSlipLine) {
+  if (column.key === "quantity") {
+    return `<td class="qty">${escapeHtml(line.quantity)}</td>`;
+  }
+
+  if (column.key === "image") {
+    return `<td class="item-image-cell">${
+      line.imageUrl
+        ? `<img src="${escapeHtml(line.imageUrl)}" alt="${escapeHtml(line.imageAlt || lineTitle(line))}">`
+        : ""
+    }</td>`;
+  }
+
+  if (column.key === "title") {
+    return `<td><strong>${escapeHtml(line.title)}</strong></td>`;
+  }
+
+  if (column.key === "variant") {
+    return `<td>${escapeHtml(
+      line.variantTitle && line.variantTitle !== "Default Title"
+        ? line.variantTitle
+        : "",
+    )}</td>`;
+  }
+
+  return `<td>${escapeHtml(line.sku || "")}</td>`;
 }
 
 function safeImageUrl(value: string | undefined) {
@@ -1404,15 +1577,10 @@ function renderTemplateBlock(
     block.type === "field"
       ? templateFieldValue({ ...context, field: block.field })
       : replaceTemplateTokens(block.text, context);
-  const value = htmlLines(rawValue.split(/\r?\n/));
-  const label =
-    block.type === "field" && block.label
-      ? `<div class="block-label">${escapeHtml(block.label)}</div>`
-      : "";
+  const value = renderTemplateTextValue(rawValue);
 
   return `
     <div class="template-block text-block" style="${blockStyle(block)}">
-      ${label}
       <div class="block-value">${value}</div>
     </div>
   `;
@@ -1430,6 +1598,7 @@ function renderPackingSlipHtml({
   template: TemplateDesign;
 }) {
   const design = normalizeTemplateDesign(template);
+  const page = normalizedTemplatePage(design.page);
   const context = { order, locationName, lines };
   const blocks = design.blocks
     .map((block) => renderTemplateBlock(block, context))
@@ -1441,7 +1610,7 @@ function renderPackingSlipHtml({
     <meta charset="utf-8">
     <title>Packing slip ${escapeHtml(order.name)}</title>
     <style>
-      @page { size: Letter; margin: 0; }
+      @page { size: ${page.width}px ${page.height}px; margin: 0; }
       * { box-sizing: border-box; }
       body {
         color: #111827;
@@ -1451,24 +1620,17 @@ function renderPackingSlipHtml({
       }
       .page {
         background: white;
-        height: 11in;
+        height: ${page.height}px;
         overflow: hidden;
         position: relative;
-        width: 8.5in;
+        width: ${page.width}px;
       }
       .template-block {
         overflow: hidden;
         position: absolute;
       }
-      .block-label {
-        color: #4b5563;
-        font-size: 10px;
-        font-weight: 700;
-        margin-bottom: 5px;
-        text-transform: uppercase;
-      }
       .block-value {
-        line-height: 1.5;
+        white-space: pre-wrap;
       }
       .image-block img {
         height: 100%;
