@@ -375,15 +375,22 @@ function renderPdf(htmlPath, pdfPath, browserProfileDir) {
     return false;
   }
 
-  run(browser, [
-    "--headless=new",
-    "--disable-gpu",
-    "--disable-extensions",
-    "--no-first-run",
-    `--user-data-dir=${browserProfileDir}`,
-    `--print-to-pdf=${pdfPath}`,
-    `file://${htmlPath}`,
-  ]);
+  run(
+    browser,
+    [
+      "--headless=new",
+      "--disable-gpu",
+      "--disable-extensions",
+      "--no-first-run",
+      `--user-data-dir=${browserProfileDir}`,
+      `--print-to-pdf=${pdfPath}`,
+      `file://${htmlPath}`,
+    ],
+    {
+      timeout: 30000,
+      killSignal: "SIGTERM",
+    },
+  );
 
   return true;
 }
@@ -474,32 +481,69 @@ async function submitCupsJob(printablePath, printerName) {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let latestRequestId = "";
 
-    const finish = async ({ timedOut, code, signal }) => {
+    const acceptedRequestId = () => {
+      latestRequestId =
+        latestRequestId ||
+        parseCupsRequestId(stdout) ||
+        [...cupsKnownJobIds(printerName)].find((id) => !beforeJobIds.has(id)) ||
+        "";
+
+      return latestRequestId;
+    };
+
+    const stopChild = () => {
+      if (!child.killed && child.exitCode === null) {
+        child.kill("SIGTERM");
+      }
+    };
+
+    const resolveAccepted = (timedOut) => {
       if (settled) {
         return;
       }
 
       settled = true;
       clearTimeout(timer);
+      clearInterval(pollTimer);
+      stopChild();
 
-      await sleep(1000);
+      resolve({
+        requestId: latestRequestId,
+        output: stdout.trim(),
+        timedOut,
+      });
+    };
 
-      const requestId =
-        parseCupsRequestId(stdout) ||
-        [...cupsKnownJobIds(printerName)].find((id) => !beforeJobIds.has(id)) ||
-        "";
+    const fail = (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(pollTimer);
+      stopChild();
+      reject(error);
+    };
+
+    const finish = ({ timedOut, code, signal }) => {
+      if (settled) {
+        return;
+      }
+
+      const requestId = acceptedRequestId();
 
       if (requestId) {
-        resolve({
-          requestId,
-          output: stdout.trim(),
-          timedOut,
-        });
+        resolveAccepted(timedOut);
         return;
       }
 
       if (!timedOut && code === 0) {
+        settled = true;
+        clearTimeout(timer);
+        clearInterval(pollTimer);
         resolve({
           requestId: "",
           output: stdout.trim() || "CUPS accepted job.",
@@ -508,7 +552,7 @@ async function submitCupsJob(printablePath, printerName) {
         return;
       }
 
-      reject(
+      fail(
         new Error(
           [
             `lp ${args.join(" ")} ${
@@ -523,27 +567,29 @@ async function submitCupsJob(printablePath, printerName) {
     };
 
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      void finish({ timedOut: true, code: null, signal: "SIGTERM" });
-    }, 5000);
+      finish({ timedOut: true, code: null, signal: "SIGTERM" });
+    }, 10000);
+
+    const pollTimer = setInterval(() => {
+      if (acceptedRequestId()) {
+        resolveAccepted(true);
+      }
+    }, 250);
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk;
+      if (acceptedRequestId()) {
+        resolveAccepted(false);
+      }
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
     child.on("error", (error) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      clearTimeout(timer);
-      reject(error);
+      fail(error);
     });
     child.on("close", (code, signal) => {
-      void finish({ timedOut: false, code, signal });
+      finish({ timedOut: false, code, signal });
     });
   });
 }
@@ -557,8 +603,11 @@ function cupsPrinterState(printerName) {
 }
 
 async function printCups(printablePath, printerName) {
+  console.log(`Submitting ${printablePath} to CUPS printer ${printerName}`);
   const submission = await submitCupsJob(printablePath, printerName);
   const { requestId } = submission;
+
+  await sleep(1000);
 
   const pending = cupsJobLine(printerName, requestId, "not-completed");
   const completed = cupsJobLine(printerName, requestId, "completed");
