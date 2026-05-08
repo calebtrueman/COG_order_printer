@@ -2532,27 +2532,48 @@ function TemplateDesigner({
 
         <div className="word-menubar">
           <button type="button" onClick={() => setPageSetupOpen(true)}>
+            <span className="word-icon" aria-hidden="true">
+              ⚙
+            </span>
             Page setup
           </button>
           <button type="button" onClick={undoDesignChange}>
+            <span className="word-icon" aria-hidden="true">
+              ↶
+            </span>
             Undo
           </button>
           <button type="button" onClick={redoDesignChange}>
+            <span className="word-icon" aria-hidden="true">
+              ↷
+            </span>
             Redo
           </button>
           <button type="button" onClick={() => addBlock("text")}>
+            <span className="word-icon" aria-hidden="true">
+              T
+            </span>
             Text box
           </button>
           <button type="button" onClick={() => addBlock("image", "")}>
+            <span className="word-icon" aria-hidden="true">
+              ▧
+            </span>
             Image
           </button>
           <button
             type="button"
             onClick={() => addBlock("image", "items.firstImage")}
           >
+            <span className="word-icon" aria-hidden="true">
+              ▣
+            </span>
             Product image
           </button>
           <button type="button" onClick={() => addBlock("items")}>
+            <span className="word-icon" aria-hidden="true">
+              ▦
+            </span>
             Items table
           </button>
         </div>
@@ -2633,6 +2654,7 @@ function TemplateDesigner({
                 type="button"
                 disabled={!selectedBlock}
                 className={selectedBlock?.align === align ? "active" : ""}
+                title={`Align ${align}`}
                 onClick={() =>
                   selectedBlock &&
                   updateBlock(selectedBlock.id, {
@@ -2640,7 +2662,9 @@ function TemplateDesigner({
                   })
                 }
               >
-                {align === "left" ? "L" : align === "center" ? "C" : "R"}
+                <span className="word-icon" aria-hidden="true">
+                  {align === "left" ? "☰" : align === "center" ? "≡" : "☷"}
+                </span>
               </button>
             ))}
           </span>
@@ -2662,6 +2686,9 @@ function TemplateDesigner({
             </select>
           </label>
           <button type="button" onClick={insertFieldToken}>
+            <span className="word-icon" aria-hidden="true">
+              +
+            </span>
             Insert field
           </button>
           <span className="word-button-group">
@@ -2669,14 +2696,22 @@ function TemplateDesigner({
               type="button"
               disabled={!selectedBlock}
               onClick={duplicateSelectedBlock}
+              title="Duplicate selected block"
             >
+              <span className="word-icon" aria-hidden="true">
+                ⧉
+              </span>
               Duplicate
             </button>
             <button
               type="button"
               disabled={selectedIndex <= 0}
               onClick={() => moveLayer(-1)}
+              title="Send selected block backward"
             >
+              <span className="word-icon" aria-hidden="true">
+                ◂
+              </span>
               Back
             </button>
             <button
@@ -2685,7 +2720,11 @@ function TemplateDesigner({
                 selectedIndex < 0 || selectedIndex >= design.blocks.length - 1
               }
               onClick={() => moveLayer(1)}
+              title="Bring selected block forward"
             >
+              <span className="word-icon" aria-hidden="true">
+                ▸
+              </span>
               Forward
             </button>
             <button
@@ -2693,7 +2732,11 @@ function TemplateDesigner({
               className="danger-button"
               disabled={!selectedBlock}
               onClick={removeSelectedBlock}
+              title="Delete selected block"
             >
+              <span className="word-icon" aria-hidden="true">
+                ×
+              </span>
               Delete
             </button>
           </span>

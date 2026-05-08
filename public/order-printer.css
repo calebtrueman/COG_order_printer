@@ -8,7 +8,8 @@ html,
 body {
   background: #f3f4f6;
   margin: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 body {
@@ -21,7 +22,8 @@ body {
 .order-printer-app {
   display: grid;
   grid-template-rows: 54px minmax(0, 1fr);
-  height: 100vh;
+  height: 100dvh;
+  min-height: 720px;
   overflow: hidden;
   width: 100vw;
 }
@@ -58,7 +60,8 @@ body {
   gap: 10px;
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 10px;
   width: 100%;
 }
@@ -1472,7 +1475,8 @@ body {
   background: #b9c0ca;
   height: 100%;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 0;
 }
 
@@ -1480,10 +1484,9 @@ body {
   background: #d7dbe2;
   display: grid;
   gap: 0;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
+  grid-template-rows: auto auto auto minmax(520px, 1fr);
+  min-height: 100%;
+  overflow: visible;
   padding: 0;
 }
 
@@ -1553,6 +1556,18 @@ body {
   justify-content: center;
   min-height: 28px;
   padding: 4px 9px;
+  white-space: nowrap;
+}
+
+.word-icon {
+  align-items: center;
+  display: inline-flex;
+  font-size: 14px;
+  font-weight: 900;
+  height: 16px;
+  justify-content: center;
+  line-height: 1;
+  width: 16px;
 }
 
 .word-title-actions button:hover,
@@ -1681,7 +1696,7 @@ body {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) auto;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   padding: 0;
 }
 
@@ -1697,7 +1712,7 @@ body {
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr);
   grid-template-rows: 24px minmax(0, 1fr);
-  min-height: 0;
+  min-height: 520px;
   min-width: 0;
   overflow: hidden;
 }
@@ -1743,10 +1758,10 @@ body {
   grid-column: 2;
   grid-row: 2;
   height: 100%;
-  min-height: 0;
+  min-height: 496px;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 28px 34px 80px;
+  padding: 28px 34px 120px;
 }
 
 .template-canvas-space {
@@ -1935,8 +1950,8 @@ body {
 
 .template-editor .template-workspace {
   grid-template-columns: minmax(0, 1fr) !important;
-  grid-template-rows: minmax(0, 1fr) auto !important;
-  overflow: hidden !important;
+  grid-template-rows: minmax(520px, 1fr) auto !important;
+  overflow: visible !important;
 }
 
 .template-editor .template-sidebar,
@@ -1946,6 +1961,6 @@ body {
 }
 
 .template-editor .template-stage {
-  min-height: 0 !important;
+  min-height: 496px !important;
   overflow: auto !important;
 }
