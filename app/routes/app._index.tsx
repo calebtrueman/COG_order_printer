@@ -404,6 +404,7 @@ type TextFormatState = {
   blockId: string;
   fontFamily: string;
   fontSize: number;
+  lineHeight: number;
   color: string;
   fontWeight: "400" | "700";
   italic: boolean;
@@ -547,6 +548,13 @@ function sanitizedInlineStyle(value: string) {
         /^([8-9]|[1-6]\d|72)(px)?$/.test(styleValue)
       ) {
         return `${name}:${Number.parseInt(styleValue, 10)}px`;
+      }
+
+      if (
+        name === "line-height" &&
+        /^(0\.[8-9]|1(\.\d)?|2(\.[0-4])?)$/.test(styleValue)
+      ) {
+        return `${name}:${Number.parseFloat(styleValue)}`;
       }
 
       if (
@@ -875,6 +883,7 @@ function textFormatFromBlock(block: TemplateBlock): TextFormatState {
     blockId: block.id,
     fontFamily: normalizeFontFamily(block.fontFamily),
     fontSize: clamp(Number(block.fontSize) || 12, 8, 72),
+    lineHeight: clampFloat(Number(block.lineHeight || 1.4), 0.8, 2.4),
     color: normalizeHex(block.color, "#111827"),
     fontWeight: block.fontWeight === "700" ? "700" : "400",
     italic: block.italic === true,
@@ -1283,16 +1292,22 @@ function textFormatFromEditorSelection(
   const element = selectedStyleElement(editor);
   const computed = window.getComputedStyle(element);
   const fontWeight = Number.parseInt(computed.fontWeight, 10);
+  const selectedFontSize =
+    Math.round(Number.parseFloat(computed.fontSize)) ||
+    Number(block.fontSize) ||
+    12;
+  const selectedLineHeight = Number.parseFloat(computed.lineHeight);
 
   return {
     blockId: block.id,
     fontFamily: canonicalFontFamily(computed.fontFamily || block.fontFamily),
-    fontSize: clamp(
-      Math.round(Number.parseFloat(computed.fontSize)) ||
-        Number(block.fontSize) ||
-        12,
-      8,
-      72,
+    fontSize: clamp(selectedFontSize, 8, 72),
+    lineHeight: clampFloat(
+      Number.isFinite(selectedLineHeight)
+        ? selectedLineHeight / selectedFontSize
+        : Number(block.lineHeight || 1.4),
+      0.8,
+      2.4,
     ),
     color: cssColorToHex(computed.color, block.color || "#111827"),
     fontWeight:
@@ -1939,9 +1954,17 @@ function TemplateDesigner({
 
   function handleStageWheel(event: WheelEvent<HTMLDivElement>) {
     if (!(event.metaKey || event.ctrlKey)) {
-      event.currentTarget.scrollLeft += event.deltaX;
-      event.currentTarget.scrollTop += event.deltaY;
+      const multiplier =
+        event.deltaMode === 1
+          ? 16
+          : event.deltaMode === 2
+            ? event.currentTarget.clientHeight
+            : 1;
+
+      event.currentTarget.scrollLeft += event.deltaX * multiplier;
+      event.currentTarget.scrollTop += event.deltaY * multiplier;
       event.preventDefault();
+      event.stopPropagation();
       return;
     }
 
@@ -2311,6 +2334,50 @@ function TemplateDesigner({
     wrapRichSelection({ fontSize: `${size}px` });
   }
 
+  function applyRichTextLineHeight(lineHeight: string) {
+    const size = clampFloat(Number(lineHeight), 0.8, 2.4);
+
+    if (!size) {
+      return;
+    }
+
+    wrapRichSelection({ lineHeight: String(size) });
+  }
+
+  function blockPatchFromRichStyle(style: Partial<CSSStyleDeclaration>) {
+    const patch: Partial<TemplateBlock> = {};
+
+    if (style.fontFamily) {
+      patch.fontFamily = style.fontFamily;
+    }
+
+    if (style.fontSize) {
+      patch.fontSize = Number.parseInt(style.fontSize, 10);
+    }
+
+    if (style.lineHeight) {
+      patch.lineHeight = Number.parseFloat(style.lineHeight);
+    }
+
+    if (style.fontWeight) {
+      patch.fontWeight = style.fontWeight === "700" ? "700" : "400";
+    }
+
+    if (style.fontStyle) {
+      patch.italic = style.fontStyle === "italic";
+    }
+
+    if (style.textDecoration) {
+      patch.underline = style.textDecoration === "underline";
+    }
+
+    if (style.color) {
+      patch.color = style.color;
+    }
+
+    return patch;
+  }
+
   function wrapRichSelection(
     style: Partial<CSSStyleDeclaration>,
     fallback = "",
@@ -2326,31 +2393,7 @@ function TemplateDesigner({
     }
 
     if (!editor) {
-      const patch: Partial<TemplateBlock> = {};
-
-      if (style.fontFamily) {
-        patch.fontFamily = style.fontFamily;
-      }
-
-      if (style.fontSize) {
-        patch.fontSize = Number.parseInt(style.fontSize, 10);
-      }
-
-      if (style.fontWeight) {
-        patch.fontWeight = style.fontWeight === "700" ? "700" : "400";
-      }
-
-      if (style.fontStyle) {
-        patch.italic = style.fontStyle === "italic";
-      }
-
-      if (style.textDecoration) {
-        patch.underline = style.textDecoration === "underline";
-      }
-
-      if (style.color) {
-        patch.color = style.color;
-      }
+      const patch = blockPatchFromRichStyle(style);
 
       updateBlock(block.id, patch);
       setActiveTextFormat(textFormatFromBlock({ ...block, ...patch }));
@@ -2378,20 +2421,7 @@ function TemplateDesigner({
         return;
       }
 
-      const blockPatch: Partial<TemplateBlock> = {
-        ...(style.fontFamily ? { fontFamily: style.fontFamily } : {}),
-        ...(style.fontSize
-          ? { fontSize: Number.parseInt(style.fontSize, 10) }
-          : {}),
-        ...(style.fontWeight
-          ? { fontWeight: style.fontWeight === "700" ? "700" : "400" }
-          : {}),
-        ...(style.fontStyle ? { italic: style.fontStyle === "italic" } : {}),
-        ...(style.textDecoration
-          ? { underline: style.textDecoration === "underline" }
-          : {}),
-        ...(style.color ? { color: style.color } : {}),
-      };
+      const blockPatch = blockPatchFromRichStyle(style);
 
       updateBlock(block.id, blockPatch);
       setActiveTextFormat(textFormatFromBlock({ ...block, ...blockPatch }));
@@ -2787,6 +2817,23 @@ function TemplateDesigner({
               ))}
             </select>
           </label>
+          <label className="word-line-control">
+            <span>Line</span>
+            <select
+              value={String(toolbarTextFormat?.lineHeight || 1.4)}
+              onChange={(event) =>
+                applyRichTextLineHeight(event.currentTarget.value)
+              }
+            >
+              {[0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.75, 2, 2.25].map(
+                (lineHeight) => (
+                  <option key={lineHeight} value={lineHeight}>
+                    {lineHeight}
+                  </option>
+                ),
+              )}
+            </select>
+          </label>
           <span className="word-button-group">
             <button
               type="button"
@@ -2953,7 +3000,7 @@ function TemplateDesigner({
               <div className="word-ruler-horizontal" />
               <div className="word-ruler-vertical" />
 
-              <div className="template-stage" onWheel={handleStageWheel}>
+              <div className="template-stage" onWheelCapture={handleStageWheel}>
                 <div
                   className="template-canvas-space"
                   style={{
