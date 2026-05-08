@@ -171,7 +171,13 @@ export type ReprintOrder = {
 };
 
 export type TemplateBlockType = "field" | "text" | "image" | "items";
-export type ItemColumnKey = "quantity" | "image" | "title" | "variant" | "sku";
+export type ItemColumnKey =
+  | "checkbox"
+  | "quantity"
+  | "image"
+  | "title"
+  | "variant"
+  | "sku";
 
 export type ItemColumn = {
   key: ItemColumnKey;
@@ -313,6 +319,19 @@ const TEMPLATE_FONT_FAMILIES = new Set([
   "Tahoma, Geneva, sans-serif",
 ]);
 const DEFAULT_ITEM_COLUMNS: NormalizedItemColumn[] = [
+  {
+    key: "checkbox",
+    label: "",
+    enabled: false,
+    width: 34,
+    align: "center",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 11,
+    valueFontWeight: "400",
+    valueColor: "#111827",
+  },
   {
     key: "quantity",
     label: "Qty",
@@ -1751,6 +1770,18 @@ function sanitizedInlineStyle(value: string) {
         return `${name}:${Number.parseInt(styleValue, 10)}px`;
       }
 
+      if (name === "line-height") {
+        const lineHeight = Number.parseFloat(styleValue);
+
+        if (
+          Number.isFinite(lineHeight) &&
+          lineHeight >= 0.8 &&
+          lineHeight <= 2.4
+        ) {
+          return `${name}:${normalizedLineHeight(lineHeight)}`;
+        }
+      }
+
       if (
         name === "font-family" &&
         /^[\w\s'",-]+$/.test(styleValue) &&
@@ -1928,6 +1959,10 @@ function itemColumnValueStyle(column: ItemColumn) {
 }
 
 function renderItemCell(column: ItemColumn, line: PackingSlipLine) {
+  if (column.key === "checkbox") {
+    return `<td class="checkbox-cell" style="${itemColumnValueStyle(column)}"><span class="print-checkbox"></span></td>`;
+  }
+
   if (column.key === "quantity") {
     return `<td class="qty" style="${itemColumnValueStyle(column)}">${escapeHtml(line.quantity)}</td>`;
   }
@@ -2091,6 +2126,15 @@ function renderPackingSlipHtml({
         height: 54px;
         object-fit: contain;
         width: 54px;
+      }
+      .checkbox-cell {
+        text-align: center;
+      }
+      .print-checkbox {
+        border: 1.5px solid currentColor;
+        display: inline-block;
+        height: 13px;
+        width: 13px;
       }
       .meta {
         color: #4b5563;

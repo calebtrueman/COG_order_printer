@@ -85,6 +85,19 @@ const FONT_FAMILIES = [
 ];
 const DEFAULT_ITEM_COLUMNS = [
   {
+    key: "checkbox",
+    label: "",
+    enabled: false,
+    width: 34,
+    align: "center",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 11,
+    valueFontWeight: "400",
+    valueColor: "#111827",
+  },
+  {
     key: "quantity",
     label: "Qty",
     enabled: true,
@@ -168,6 +181,7 @@ type RichTextSelection = {
   blockId: string;
   start: number;
   end: number;
+  tokenIndex?: number;
 };
 type MentionMenuState = {
   blockId: string;
@@ -725,9 +739,19 @@ function editorElementToTemplateHtml(editor: HTMLDivElement) {
   clone
     .querySelectorAll<HTMLElement>("[data-template-token]")
     .forEach((token) => {
-      token.replaceWith(
-        document.createTextNode(token.dataset.templateToken || ""),
-      );
+      const templateToken = token.dataset.templateToken || "";
+      const style = sanitizedInlineStyle(token.getAttribute("style") || "");
+
+      if (style) {
+        const wrapper = document.createElement("span");
+
+        wrapper.setAttribute("style", style);
+        wrapper.textContent = templateToken;
+        token.replaceWith(wrapper);
+        return;
+      }
+
+      token.replaceWith(document.createTextNode(templateToken));
     });
 
   return sanitizeTemplateHtml(snapMentions(clone.innerHTML));
@@ -902,6 +926,52 @@ function cssColorToHex(value: string | undefined, fallback: string) {
         .padStart(2, "0"),
     )
     .join("")}`;
+}
+
+function styleDeclarationForTokenStyle(style: CSSStyleDeclaration) {
+  const fontSize = Number.parseFloat(style.fontSize) || 12;
+  const lineHeight = Number.parseFloat(style.lineHeight);
+
+  return {
+    fontFamily: canonicalFontFamily(style.fontFamily),
+    fontSize: `${clamp(fontSize, 8, 72)}px`,
+    fontWeight:
+      style.fontWeight === "bold" ||
+      Number.parseInt(style.fontWeight, 10) >= 600
+        ? "700"
+        : "400",
+    fontStyle: style.fontStyle === "italic" ? "italic" : "normal",
+    lineHeight: String(
+      normalizeLineHeight(
+        Number.isFinite(lineHeight) ? lineHeight / fontSize : undefined,
+      ),
+    ),
+    textDecoration:
+      style.textDecorationLine.includes("underline") ||
+      style.textDecoration.includes("underline")
+        ? "underline"
+        : "none",
+    color: cssColorToHex(style.color, "#111827"),
+  };
+}
+
+function applyTokenStyleFromElement(token: HTMLElement, source: Element) {
+  Object.assign(
+    token.style,
+    styleDeclarationForTokenStyle(getComputedStyle(source)),
+  );
+}
+
+function materializeVariableTokenStyles(editor: HTMLDivElement) {
+  editor
+    .querySelectorAll<HTMLElement>("[data-template-token]")
+    .forEach((token) => {
+      if (token.getAttribute("style")) {
+        return;
+      }
+
+      applyTokenStyleFromElement(token, token);
+    });
 }
 
 function textFormatFromBlock(block: TemplateBlock): TextFormatState {
@@ -1179,6 +1249,10 @@ function renderSampleItemCell(
   key: ItemColumnKey,
   line: (typeof SAMPLE_LINES)[number],
 ) {
+  if (key === "checkbox") {
+    return <span className="sample-line-checkbox" />;
+  }
+
   if (key === "quantity") {
     return line.quantity;
   }
@@ -1284,6 +1358,11 @@ function selectedStyleElement(editor: HTMLDivElement) {
   }
 
   const range = selection.getRangeAt(0);
+  const token = selectedTokenElement(editor, range);
+
+  if (token) {
+    return token;
+  }
 
   if (!editor.contains(range.commonAncestorContainer)) {
     return editor;
@@ -1308,6 +1387,48 @@ function selectedStyleElement(editor: HTMLDivElement) {
     ) ||
     (node as HTMLElement) ||
     editor
+  );
+}
+
+function selectedTokenElement(editor: HTMLDivElement, range?: Range) {
+  const selection = window.getSelection();
+  const selectedRange =
+    range || (selection?.rangeCount ? selection.getRangeAt(0) : null);
+
+  if (
+    !selectedRange ||
+    !editor.contains(selectedRange.commonAncestorContainer)
+  ) {
+    return null;
+  }
+
+  const directNode =
+    selectedRange.startContainer === editor
+      ? editor.childNodes[selectedRange.startOffset] || null
+      : selectedRange.startContainer;
+  const element =
+    directNode instanceof HTMLElement
+      ? directNode
+      : directNode?.parentElement || null;
+  const closestToken = element?.closest<HTMLElement>("[data-template-token]");
+
+  if (closestToken && editor.contains(closestToken)) {
+    return closestToken;
+  }
+
+  const contents = selectedRange.cloneContents();
+  const selectedToken = contents.querySelector?.("[data-template-token]");
+
+  if (!selectedToken) {
+    return null;
+  }
+
+  const tokenValue = selectedToken.getAttribute("data-template-token");
+
+  return (
+    Array.from(
+      editor.querySelectorAll<HTMLElement>("[data-template-token]"),
+    ).find((token) => token.dataset.templateToken === tokenValue) || null
   );
 }
 
@@ -1399,6 +1520,31 @@ function restoreEditorSelection(
   selection.addRange(range);
 }
 
+function selectVariableToken(editor: HTMLDivElement, token: HTMLElement) {
+  const selection = window.getSelection();
+
+  if (!selection) {
+    return;
+  }
+
+  const range = document.createRange();
+  range.selectNode(token);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function variableTokenIndex(editor: HTMLDivElement, token: HTMLElement | null) {
+  if (!token) {
+    return undefined;
+  }
+
+  const index = Array.from(
+    editor.querySelectorAll<HTMLElement>("[data-template-token]"),
+  ).indexOf(token);
+
+  return index >= 0 ? index : undefined;
+}
+
 function setEditorHtml(editor: HTMLDivElement, html: string) {
   const offsets =
     document.activeElement === editor ? editorSelectionOffsets(editor) : null;
@@ -1479,6 +1625,7 @@ function RichTextBox({
 
     if (element.innerHTML !== currentHtml) {
       setEditorHtml(element, currentHtml);
+      materializeVariableTokenStyles(element);
     }
   }, [currentHtml]);
 
@@ -1490,7 +1637,18 @@ function RichTextBox({
       data-template-rich-editor={block.id}
       aria-multiline="true"
       onBlur={(event) => onBlur?.(event.currentTarget, block)}
-      onClick={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        const token = (event.target as HTMLElement).closest<HTMLElement>(
+          "[data-template-token]",
+        );
+
+        event.stopPropagation();
+
+        if (token && event.currentTarget.contains(token)) {
+          selectVariableToken(event.currentTarget, token);
+          onSelectionChange?.(event.currentTarget, block);
+        }
+      }}
       onDoubleClick={(event) => event.stopPropagation()}
       onFocus={(event) => onFocus?.(event.currentTarget, block)}
       onInput={(event) => onInput(event, block)}
@@ -1502,6 +1660,7 @@ function RichTextBox({
         localRef.current = element;
         if (element && !element.innerHTML) {
           element.innerHTML = currentHtml;
+          materializeVariableTokenStyles(element);
         }
         editorRef?.(element);
       }}
@@ -2137,13 +2296,17 @@ function TemplateDesigner({
     });
   }
 
-  function variableTokenElement(field: TemplateField) {
+  function variableTokenElement(field: TemplateField, source?: Element | null) {
     const token = document.createElement("span");
 
     token.className = "editor-variable-token";
     token.dataset.templateToken = tokenForField(field.value);
     token.contentEditable = "false";
     token.textContent = field.label;
+
+    if (source) {
+      applyTokenStyleFromElement(token, source);
+    }
 
     return token;
   }
@@ -2192,7 +2355,7 @@ function TemplateDesigner({
       return;
     }
 
-    const token = variableTokenElement(field);
+    const token = variableTokenElement(field, selectedStyleElement(editor));
     const spacer = document.createTextNode(" ");
 
     range.deleteContents();
@@ -2226,6 +2389,7 @@ function TemplateDesigner({
 
         if (editor.innerHTML !== editorHtml) {
           setEditorHtml(editor, editorHtml);
+          materializeVariableTokenStyles(editor);
         }
       });
   }
@@ -2343,6 +2507,9 @@ function TemplateDesigner({
     const block = design.blocks.find(
       (item) => item.id === editor.dataset.blockId,
     );
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    const token = range ? selectedTokenElement(editor, range) : null;
 
     if (!offsets) {
       return;
@@ -2351,6 +2518,7 @@ function TemplateDesigner({
     activeRichEditorRef.current = editor;
     richSelectionRef.current = {
       blockId: editor.dataset.blockId || "",
+      tokenIndex: variableTokenIndex(editor, token),
       ...offsets,
     };
 
@@ -2377,6 +2545,17 @@ function TemplateDesigner({
     if (!savedSelection || savedSelection.blockId !== editor.dataset.blockId) {
       selectEditorContents(editor);
       return;
+    }
+
+    if (typeof savedSelection.tokenIndex === "number") {
+      const token = editor.querySelectorAll<HTMLElement>(
+        "[data-template-token]",
+      )[savedSelection.tokenIndex];
+
+      if (token) {
+        selectVariableToken(editor, token);
+        return;
+      }
     }
 
     restoreEditorSelection(editor, savedSelection);
@@ -2544,6 +2723,17 @@ function TemplateDesigner({
     const range = selection.getRangeAt(0);
 
     if (!editor.contains(range.commonAncestorContainer)) {
+      return;
+    }
+
+    const selectedToken = selectedTokenElement(editor, range);
+
+    if (selectedToken) {
+      Object.assign(selectedToken.style, style);
+      selectVariableToken(editor, selectedToken);
+      rememberRichSelection(editor);
+      syncRichTextElement(editor, block);
+      setActiveTextFormat(textFormatFromEditorSelection(editor, block));
       return;
     }
 

@@ -886,6 +886,13 @@ body {
   margin-top: 3px;
 }
 
+.sample-line-checkbox {
+  border: 1.5px solid currentColor;
+  display: inline-block;
+  height: 12px;
+  width: 12px;
+}
+
 .variable-chip {
   background: #e0f2fe;
   border: 1px solid #0891b2;
@@ -1393,14 +1400,17 @@ body {
   background: #e8f7fb;
   border: 1px solid #21a4ba;
   border-radius: 999px;
-  color: #0f3f4a;
+  color: inherit;
   display: inline-flex;
-  font-size: 0.9em;
-  font-weight: 750;
-  line-height: 1.2;
+  font-family: inherit;
+  font-size: 1em;
+  font-style: inherit;
+  font-weight: inherit;
+  line-height: inherit;
   margin: 0 2px;
   max-width: 100%;
   padding: 2px 7px;
+  text-decoration: inherit;
   vertical-align: baseline;
   white-space: nowrap;
 }
