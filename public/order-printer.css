@@ -1981,6 +1981,7 @@ body {
 }
 
 .template-editor .template-stage {
+  height: auto !important;
   min-height: 0 !important;
   overscroll-behavior: auto !important;
   overflow: scroll !important;
@@ -1988,4 +1989,48 @@ body {
 
 .template-editor .template-inline-textarea {
   overflow: visible !important;
+}
+
+html,
+body {
+  min-height: 100%;
+  overflow-y: auto !important;
+}
+
+.order-printer-app {
+  height: auto !important;
+  min-height: 100dvh !important;
+  overflow: visible !important;
+}
+
+.app-body {
+  align-content: start;
+  min-height: calc(100dvh - 54px);
+  overflow: visible !important;
+}
+
+.template-app-panel {
+  height: auto !important;
+  min-height: calc(100dvh - 126px);
+  overflow: visible !important;
+}
+
+.template-editor {
+  height: auto !important;
+  min-height: calc(100dvh - 126px) !important;
+  overflow: visible !important;
+}
+
+.template-editor .template-workspace {
+  min-height: 760px;
+  overflow: visible !important;
+}
+
+.template-editor .template-stage-column,
+.template-editor .word-workspace {
+  min-height: 720px;
+}
+
+.template-editor .template-stage {
+  min-height: 696px !important;
 }

@@ -368,6 +368,12 @@ function normalizeZoom(value: number) {
   return clampFloat(stepped, MIN_TEMPLATE_ZOOM, MAX_TEMPLATE_ZOOM);
 }
 
+function nearestOption(value: number, options: number[]) {
+  return options.reduce((nearest, option) =>
+    Math.abs(option - value) < Math.abs(nearest - value) ? option : nearest,
+  );
+}
+
 type ResizeHandle = "nw" | "ne" | "sw" | "se";
 
 type CanvasOperation =
@@ -395,10 +401,25 @@ const ZOOM_OPTIONS = Array.from(
   },
   (_item, index) => normalizeZoom(MIN_TEMPLATE_ZOOM + index * 0.05),
 );
+const LINE_HEIGHT_OPTIONS = [0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.75, 2, 2.25];
 const RICH_TEXT_SIZE_OPTIONS = Array.from(
   { length: 65 },
   (_item, index) => index + 8,
 );
+
+function normalizeLineHeight(
+  value: number | string | undefined,
+  fallback = 1.4,
+) {
+  const numericValue = Number(value);
+  const bounded = clampFloat(
+    Number.isFinite(numericValue) ? numericValue : fallback,
+    0.8,
+    2.4,
+  );
+
+  return nearestOption(bounded, LINE_HEIGHT_OPTIONS);
+}
 
 type TextFormatState = {
   blockId: string;
@@ -550,11 +571,16 @@ function sanitizedInlineStyle(value: string) {
         return `${name}:${Number.parseInt(styleValue, 10)}px`;
       }
 
-      if (
-        name === "line-height" &&
-        /^(0\.[8-9]|1(\.\d)?|2(\.[0-4])?)$/.test(styleValue)
-      ) {
-        return `${name}:${Number.parseFloat(styleValue)}`;
+      if (name === "line-height") {
+        const lineHeight = Number.parseFloat(styleValue);
+
+        if (
+          Number.isFinite(lineHeight) &&
+          lineHeight >= 0.8 &&
+          lineHeight <= 2.4
+        ) {
+          return `${name}:${normalizeLineHeight(lineHeight)}`;
+        }
       }
 
       if (
@@ -883,7 +909,7 @@ function textFormatFromBlock(block: TemplateBlock): TextFormatState {
     blockId: block.id,
     fontFamily: normalizeFontFamily(block.fontFamily),
     fontSize: clamp(Number(block.fontSize) || 12, 8, 72),
-    lineHeight: clampFloat(Number(block.lineHeight || 1.4), 0.8, 2.4),
+    lineHeight: normalizeLineHeight(block.lineHeight),
     color: normalizeHex(block.color, "#111827"),
     fontWeight: block.fontWeight === "700" ? "700" : "400",
     italic: block.italic === true,
@@ -965,7 +991,7 @@ function normalizeBlockGeometry(
     italic: block.italic === true,
     underline: block.underline === true,
     uppercase: block.uppercase === true,
-    lineHeight: clampFloat(Number(block.lineHeight || 1.4), 0.8, 2.4),
+    lineHeight: normalizeLineHeight(block.lineHeight),
     color: normalizeHex(block.color, "#111827"),
     background:
       block.background === "transparent"
@@ -989,7 +1015,7 @@ function previewStyle(block: TemplateBlock): CSSProperties {
     fontSize: block.fontSize || 12,
     fontWeight: block.fontWeight || "400",
     fontStyle: block.italic ? "italic" : "normal",
-    lineHeight: block.lineHeight || 1.4,
+    lineHeight: normalizeLineHeight(block.lineHeight),
     textDecoration: block.underline ? "underline" : "none",
     textTransform: block.uppercase ? "uppercase" : "none",
     textAlign: block.align || "left",
@@ -1009,7 +1035,7 @@ function richTextEditorStyle(block: TemplateBlock): CSSProperties {
     fontSize: block.fontSize || 12,
     fontWeight: block.fontWeight || "400",
     fontStyle: block.italic ? "italic" : "normal",
-    lineHeight: block.lineHeight || 1.4,
+    lineHeight: normalizeLineHeight(block.lineHeight),
     textDecoration: block.underline ? "underline" : "none",
     textTransform: block.uppercase ? "uppercase" : "none",
     textAlign: block.align || "left",
@@ -1302,12 +1328,10 @@ function textFormatFromEditorSelection(
     blockId: block.id,
     fontFamily: canonicalFontFamily(computed.fontFamily || block.fontFamily),
     fontSize: clamp(selectedFontSize, 8, 72),
-    lineHeight: clampFloat(
+    lineHeight: normalizeLineHeight(
       Number.isFinite(selectedLineHeight)
         ? selectedLineHeight / selectedFontSize
-        : Number(block.lineHeight || 1.4),
-      0.8,
-      2.4,
+        : block.lineHeight,
     ),
     color: cssColorToHex(computed.color, block.color || "#111827"),
     fontWeight:
@@ -1810,6 +1834,82 @@ function TemplateDesigner({
     setMentionMenu(null);
     setActiveTextFormat(null);
     setSelectedId(nextDesign.blocks[0]?.id || "");
+  }
+
+  function uniqueTemplateName(baseName = "New packing slip") {
+    const existingNames = new Set(
+      templates.map((item) => item.name.trim().toLowerCase()),
+    );
+
+    if (!existingNames.has(baseName.toLowerCase())) {
+      return baseName;
+    }
+
+    for (let index = 2; index < 1000; index += 1) {
+      const candidate = `${baseName} ${index}`;
+
+      if (!existingNames.has(candidate.toLowerCase())) {
+        return candidate;
+      }
+    }
+
+    return `${baseName} ${Date.now()}`;
+  }
+
+  function createNewTemplate() {
+    const nextName = window
+      .prompt("New template name", uniqueTemplateName())
+      ?.trim();
+
+    if (!nextName) {
+      return;
+    }
+
+    const existingTemplate = templates.find(
+      (item) => item.name.toLowerCase() === nextName.toLowerCase(),
+    );
+
+    if (existingTemplate) {
+      selectTemplate(existingTemplate.name);
+      return;
+    }
+
+    const nextDesign = copyDesign(design);
+
+    designHistoryRef.current = [];
+    designFutureRef.current = [];
+    applyingHistoryRef.current = false;
+    lastDesignJsonRef.current = JSON.stringify(nextDesign);
+    setName(nextName);
+    setDesign(nextDesign);
+    setEditingTextBlockId(null);
+    setEditingItemsBlockId(null);
+    setMentionMenu(null);
+    setActiveTextFormat(null);
+    activeRichEditorRef.current = null;
+    richSelectionRef.current = null;
+    setSelectedId(nextDesign.blocks[0]?.id || "");
+  }
+
+  function clearCanvasSelection() {
+    setSelectedId("");
+    setEditingTextBlockId(null);
+    setEditingItemsBlockId(null);
+    setMentionMenu(null);
+    setActiveTextFormat(null);
+    activeRichEditorRef.current = null;
+    richSelectionRef.current = null;
+    window.getSelection()?.removeAllRanges();
+  }
+
+  function handleStagePointerDown(event: PointerEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement;
+
+    if (target.closest(".template-block-preview")) {
+      return;
+    }
+
+    clearCanvasSelection();
   }
 
   function canvasPoint(event: PointerEvent) {
@@ -2334,7 +2434,7 @@ function TemplateDesigner({
   }
 
   function applyRichTextLineHeight(lineHeight: string) {
-    const size = clampFloat(Number(lineHeight), 0.8, 2.4);
+    const size = normalizeLineHeight(lineHeight);
 
     if (!size) {
       return;
@@ -2358,7 +2458,7 @@ function TemplateDesigner({
     }
 
     if (style.lineHeight) {
-      patch.lineHeight = Number.parseFloat(style.lineHeight);
+      patch.lineHeight = normalizeLineHeight(style.lineHeight);
     }
 
     if (style.fontWeight) {
@@ -2720,14 +2820,19 @@ function TemplateDesigner({
           name="templateDesign"
           value={JSON.stringify(design)}
         />
+        <input type="hidden" name="templateName" value={name} />
         <div className="word-titlebar">
           <label className="word-template-select">
             <span>Template name</span>
             <select
-              name="templateName"
               value={name}
               onChange={(event) => selectTemplate(event.currentTarget.value)}
             >
+              {!templates.some(
+                (savedTemplate) => savedTemplate.name === name,
+              ) ? (
+                <option value={name}>{name} (new)</option>
+              ) : null}
               {templates.map((savedTemplate) => (
                 <option key={savedTemplate.name} value={savedTemplate.name}>
                   {savedTemplate.name}
@@ -2736,6 +2841,9 @@ function TemplateDesigner({
             </select>
           </label>
           <div className="word-title-actions">
+            <button type="button" onClick={createNewTemplate}>
+              <span aria-hidden="true">＋</span> New
+            </button>
             <span className={dirty ? "template-state dirty" : "template-state"}>
               {dirty ? "Unsaved" : "Saved"}
             </span>
@@ -2863,13 +2971,11 @@ function TemplateDesigner({
                 applyRichTextLineHeight(event.currentTarget.value)
               }
             >
-              {[0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.75, 2, 2.25].map(
-                (lineHeight) => (
-                  <option key={lineHeight} value={lineHeight}>
-                    {lineHeight}
-                  </option>
-                ),
-              )}
+              {LINE_HEIGHT_OPTIONS.map((lineHeight) => (
+                <option key={lineHeight} value={lineHeight}>
+                  {lineHeight}
+                </option>
+              ))}
             </select>
           </label>
           <span className="word-button-group">
@@ -3038,7 +3144,11 @@ function TemplateDesigner({
               <div className="word-ruler-horizontal" />
               <div className="word-ruler-vertical" />
 
-              <div className="template-stage" onWheelCapture={handleStageWheel}>
+              <div
+                className="template-stage"
+                onPointerDown={handleStagePointerDown}
+                onWheelCapture={handleStageWheel}
+              >
                 <div
                   className="template-canvas-space"
                   style={{
@@ -3708,10 +3818,12 @@ function TemplateDesigner({
                         min="0.8"
                         step="0.1"
                         type="number"
-                        value={selectedBlock.lineHeight || 1.4}
+                        value={normalizeLineHeight(selectedBlock.lineHeight)}
                         onChange={(event) =>
                           updateBlock(selectedBlock.id, {
-                            lineHeight: Number(event.currentTarget.value),
+                            lineHeight: normalizeLineHeight(
+                              event.currentTarget.value,
+                            ),
                           })
                         }
                       />
