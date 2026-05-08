@@ -189,6 +189,7 @@ export type TemplateBlock = {
   h: number;
   field?: string;
   text?: string;
+  textHtml?: string;
   imageUrl?: string;
   label?: string;
   fontSize?: number;
@@ -763,6 +764,8 @@ function normalizedTemplateBlock(
     field:
       typeof value.field === "string" ? value.field.trim().slice(0, 120) : "",
     text: typeof value.text === "string" ? value.text.slice(0, 2000) : "",
+    textHtml:
+      typeof value.textHtml === "string" ? value.textHtml.slice(0, 12000) : "",
     imageUrl:
       typeof value.imageUrl === "string"
         ? value.imageUrl.trim().slice(0, 2000)
@@ -1451,6 +1454,150 @@ function renderTemplateTextValue(value: string) {
   return escapeHtml(value);
 }
 
+function sanitizedInlineStyle(value: string) {
+  return value
+    .split(";")
+    .map((rule) => rule.trim())
+    .map((rule) => {
+      const [rawName, ...rawValueParts] = rule.split(":");
+      const name = rawName?.trim().toLowerCase();
+      const styleValue = rawValueParts.join(":").trim();
+
+      if (!name || !styleValue) {
+        return "";
+      }
+
+      if (
+        name === "font-weight" &&
+        /^(400|500|600|700|bold|normal)$/i.test(styleValue)
+      ) {
+        return `${name}:${styleValue}`;
+      }
+
+      if (name === "font-style" && /^(italic|normal)$/i.test(styleValue)) {
+        return `${name}:${styleValue}`;
+      }
+
+      if (
+        name === "text-decoration" &&
+        /^(underline|none|line-through)$/i.test(styleValue)
+      ) {
+        return `${name}:${styleValue}`;
+      }
+
+      if (
+        (name === "color" || name === "background-color") &&
+        (/^#[0-9a-fA-F]{3,6}$/.test(styleValue) ||
+          /^rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)$/.test(styleValue))
+      ) {
+        return `${name}:${styleValue}`;
+      }
+
+      if (
+        name === "font-size" &&
+        /^([8-9]|[1-6]\d|72)(px)?$/.test(styleValue)
+      ) {
+        return `${name}:${Number.parseInt(styleValue, 10)}px`;
+      }
+
+      if (
+        name === "font-family" &&
+        /^[\w\s'",-]+$/.test(styleValue) &&
+        styleValue.length < 120
+      ) {
+        return `${name}:${styleValue}`;
+      }
+
+      return "";
+    })
+    .filter(Boolean)
+    .join(";");
+}
+
+function attributeValue(markup: string, name: string) {
+  const pattern = new RegExp(`${name}\\s*=\\s*("([^"]*)"|'([^']*)')`, "i");
+  const match = markup.match(pattern);
+
+  return match?.[2] || match?.[3] || "";
+}
+
+function sanitizeTemplateHtml(html: string) {
+  const allowedTags = new Set([
+    "b",
+    "strong",
+    "i",
+    "em",
+    "u",
+    "span",
+    "br",
+    "div",
+    "p",
+    "font",
+  ]);
+
+  return String(html || "")
+    .slice(0, 12000)
+    .replace(/<[^>]*>|[^<]+/g, (chunk) => {
+      if (!chunk.startsWith("<")) {
+        return escapeHtml(chunk.replaceAll("&nbsp;", " "));
+      }
+
+      const closing = chunk.match(/^<\/\s*([a-z0-9]+)\s*>$/i);
+
+      if (closing) {
+        const tag = closing[1].toLowerCase();
+
+        if (tag === "font") {
+          return "</span>";
+        }
+
+        return allowedTags.has(tag) && tag !== "br" ? `</${tag}>` : "";
+      }
+
+      const opening = chunk.match(/^<\s*([a-z0-9]+)([^>]*)\/?\s*>$/i);
+
+      if (!opening) {
+        return "";
+      }
+
+      const tag = opening[1].toLowerCase();
+      const attrs = opening[2] || "";
+
+      if (!allowedTags.has(tag)) {
+        return "";
+      }
+
+      if (tag === "br") {
+        return "<br>";
+      }
+
+      if (tag === "font") {
+        const color = attributeValue(attrs, "color");
+        const face = attributeValue(attrs, "face");
+        const size = Number(attributeValue(attrs, "size"));
+        const styles = [
+          color ? sanitizedInlineStyle(`color:${color}`) : "",
+          face ? sanitizedInlineStyle(`font-family:${face}`) : "",
+          Number.isFinite(size)
+            ? sanitizedInlineStyle(
+                `font-size:${Math.min(72, Math.max(8, size * 4 + 4))}px`,
+              )
+            : "",
+        ].filter(Boolean);
+
+        return styles.length ? `<span style="${styles.join(";")}">` : "<span>";
+      }
+
+      if (tag !== "span") {
+        return `<${tag}>`;
+      }
+
+      const style = sanitizedInlineStyle(attributeValue(attrs, "style"));
+
+      return style ? `<span style="${style}">` : "<span>";
+    });
+}
+
 function blockStyle(block: TemplateBlock) {
   return [
     `left:${block.x}px`,
@@ -1577,7 +1724,10 @@ function renderTemplateBlock(
     block.type === "field"
       ? templateFieldValue({ ...context, field: block.field })
       : replaceTemplateTokens(block.text, context);
-  const value = renderTemplateTextValue(rawValue);
+  const value =
+    block.type === "text" && block.textHtml
+      ? sanitizeTemplateHtml(replaceTemplateTokens(block.textHtml, context))
+      : renderTemplateTextValue(rawValue);
 
   return `
     <div class="template-block text-block" style="${blockStyle(block)}">

@@ -13,7 +13,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
-  ChangeEvent,
+  FormEvent,
   KeyboardEvent,
   PointerEvent,
 } from "react";
@@ -338,6 +338,188 @@ function tokenForField(field: string) {
   return `{{${field}}}`;
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function plainTextToHtml(value: string | undefined) {
+  return escapeHtml(String(value || "")).replace(/\r?\n/g, "<br>");
+}
+
+function htmlToPlainText(value: string | undefined) {
+  return String(value || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(div|p)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+}
+
+function sanitizedInlineStyle(value: string) {
+  return value
+    .split(";")
+    .map((rule) => rule.trim())
+    .map((rule) => {
+      const [rawName, ...rawValueParts] = rule.split(":");
+      const name = rawName?.trim().toLowerCase();
+      const styleValue = rawValueParts.join(":").trim();
+
+      if (!name || !styleValue) {
+        return "";
+      }
+
+      if (
+        name === "font-weight" &&
+        /^(400|500|600|700|bold|normal)$/i.test(styleValue)
+      ) {
+        return `${name}:${styleValue}`;
+      }
+
+      if (name === "font-style" && /^(italic|normal)$/i.test(styleValue)) {
+        return `${name}:${styleValue}`;
+      }
+
+      if (
+        name === "text-decoration" &&
+        /^(underline|none|line-through)$/i.test(styleValue)
+      ) {
+        return `${name}:${styleValue}`;
+      }
+
+      if (
+        (name === "color" || name === "background-color") &&
+        (/^#[0-9a-fA-F]{3,6}$/.test(styleValue) ||
+          /^rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)$/i.test(
+            styleValue,
+          ))
+      ) {
+        return `${name}:${styleValue}`;
+      }
+
+      if (
+        name === "font-size" &&
+        /^([8-9]|[1-6]\d|72)(px)?$/.test(styleValue)
+      ) {
+        return `${name}:${Number.parseInt(styleValue, 10)}px`;
+      }
+
+      if (
+        name === "font-family" &&
+        /^[\w\s'",-]+$/.test(styleValue) &&
+        styleValue.length < 120
+      ) {
+        return `${name}:${styleValue}`;
+      }
+
+      return "";
+    })
+    .filter(Boolean)
+    .join(";");
+}
+
+function attributeValue(markup: string, name: string) {
+  const pattern = new RegExp(`${name}\\s*=\\s*("([^"]*)"|'([^']*)')`, "i");
+  const match = markup.match(pattern);
+
+  return match?.[2] || match?.[3] || "";
+}
+
+function sanitizeTemplateHtml(html: string) {
+  const allowedTags = new Set([
+    "b",
+    "strong",
+    "i",
+    "em",
+    "u",
+    "span",
+    "br",
+    "div",
+    "p",
+    "font",
+  ]);
+
+  return String(html || "")
+    .slice(0, 12000)
+    .replace(/<[^>]*>|[^<]+/g, (chunk) => {
+      if (!chunk.startsWith("<")) {
+        return escapeHtml(chunk.replaceAll("&nbsp;", " "));
+      }
+
+      const closing = chunk.match(/^<\/\s*([a-z0-9]+)\s*>$/i);
+
+      if (closing) {
+        const tag = closing[1].toLowerCase();
+
+        if (tag === "font") {
+          return "</span>";
+        }
+
+        return allowedTags.has(tag) && tag !== "br" ? `</${tag}>` : "";
+      }
+
+      const opening = chunk.match(/^<\s*([a-z0-9]+)([^>]*)\/?\s*>$/i);
+
+      if (!opening) {
+        return "";
+      }
+
+      const tag = opening[1].toLowerCase();
+      const attrs = opening[2] || "";
+
+      if (!allowedTags.has(tag)) {
+        return "";
+      }
+
+      if (tag === "br") {
+        return "<br>";
+      }
+
+      if (tag === "font") {
+        const color = attributeValue(attrs, "color");
+        const face = attributeValue(attrs, "face");
+        const size = Number(attributeValue(attrs, "size"));
+        const styles = [
+          color ? sanitizedInlineStyle(`color:${color}`) : "",
+          face ? sanitizedInlineStyle(`font-family:${face}`) : "",
+          Number.isFinite(size)
+            ? sanitizedInlineStyle(
+                `font-size:${Math.min(72, Math.max(8, size * 4 + 4))}px`,
+              )
+            : "",
+        ].filter(Boolean);
+
+        return styles.length ? `<span style="${styles.join(";")}">` : "<span>";
+      }
+
+      if (tag !== "span") {
+        return `<${tag}>`;
+      }
+
+      const style = sanitizedInlineStyle(attributeValue(attrs, "style"));
+
+      return style ? `<span style="${style}">` : "<span>";
+    });
+}
+
+function textBlockHtml(block: TemplateBlock) {
+  return sanitizeTemplateHtml(block.textHtml || plainTextToHtml(block.text));
+}
+
+function sampleTextHtml(block: TemplateBlock) {
+  return sanitizeTemplateHtml(replaceSampleTokens(textBlockHtml(block)));
+}
+
 function snapMentions(value: string) {
   return TEMPLATE_FIELDS.reduce((current, field) => {
     const pattern = new RegExp(
@@ -367,15 +549,25 @@ function lineBreaks(value: string) {
   ));
 }
 
-function richTextPreview(value: string | undefined) {
-  const text = replaceSampleTokens(value);
+function richTextPreview(block: TemplateBlock) {
+  if (block.textHtml) {
+    return (
+      <span
+        dangerouslySetInnerHTML={{
+          __html: sampleTextHtml(block),
+        }}
+      />
+    );
+  }
+
+  const text = replaceSampleTokens(block.text);
   const tokenPattern = /\{\{\s*([\w.]+)\s*\}\}/g;
   const nodes = [];
   let cursor = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = tokenPattern.exec(String(value || "")))) {
-    const before = String(value || "").slice(cursor, match.index);
+  while ((match = tokenPattern.exec(String(block.text || "")))) {
+    const before = String(block.text || "").slice(cursor, match.index);
 
     if (before) {
       nodes.push(
@@ -395,7 +587,7 @@ function richTextPreview(value: string | undefined) {
     cursor = match.index + match[0].length;
   }
 
-  const rest = String(value || "").slice(cursor);
+  const rest = String(block.text || "").slice(cursor);
 
   if (rest) {
     nodes.push(
@@ -563,6 +755,10 @@ function createTemplateBlock(
       h: type === "items" ? 330 : type === "image" ? 130 : 64,
       field: type === "field" || type === "image" ? field : "",
       text: type === "text" ? "Custom text with @Order # or any variable" : "",
+      textHtml:
+        type === "text"
+          ? plainTextToHtml("Custom text with @Order # or any variable")
+          : "",
       imageUrl: "",
       label: type === "field" ? selectedField?.label || "Order field" : "",
       fontSize: type === "text" ? 14 : 12,
@@ -714,10 +910,67 @@ function TemplateBlockPreview({ block }: { block: TemplateBlock }) {
   }
 
   if (block.type === "text") {
-    return <span>{richTextPreview(block.text)}</span>;
+    return <span>{richTextPreview(block)}</span>;
   }
 
   return <span>{lineBreaks(fieldSample(block.field))}</span>;
+}
+
+function RichTextBox({
+  block,
+  className,
+  editorRef,
+  onInput,
+  onKeyDown,
+  onFocus,
+  onBlur,
+}: {
+  block: TemplateBlock;
+  className: string;
+  editorRef?: (element: HTMLDivElement | null) => void;
+  onInput: (event: FormEvent<HTMLDivElement>, block: TemplateBlock) => void;
+  onKeyDown: (
+    event: KeyboardEvent<HTMLDivElement>,
+    block: TemplateBlock,
+  ) => void;
+  onFocus?: (element: HTMLDivElement, block: TemplateBlock) => void;
+  onBlur?: () => void;
+}) {
+  const localRef = useRef<HTMLDivElement | null>(null);
+  const initialHtml = textBlockHtml(block);
+
+  useEffect(() => {
+    const element = localRef.current;
+
+    if (!element || document.activeElement === element) {
+      return;
+    }
+
+    element.innerHTML = textBlockHtml(block);
+  }, [block]);
+
+  return (
+    <div
+      className={className}
+      contentEditable
+      data-block-id={block.id}
+      dangerouslySetInnerHTML={{ __html: initialHtml }}
+      onBlur={onBlur}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onFocus={(event) => onFocus?.(event.currentTarget, block)}
+      onInput={(event) => onInput(event, block)}
+      onKeyDown={(event) => onKeyDown(event, block)}
+      onPointerDown={(event) => event.stopPropagation()}
+      ref={(element) => {
+        localRef.current = element;
+        editorRef?.(element);
+      }}
+      role="textbox"
+      suppressContentEditableWarning
+      tabIndex={0}
+    />
+  );
 }
 
 function TemplateDesigner({
@@ -746,7 +999,8 @@ function TemplateDesigner({
     null,
   );
   const canvasRef = useRef<HTMLDivElement | null>(null);
-  const inlineTextRef = useRef<HTMLTextAreaElement | null>(null);
+  const inlineTextRef = useRef<HTMLDivElement | null>(null);
+  const activeRichEditorRef = useRef<HTMLDivElement | null>(null);
   const operationRef = useRef<CanvasOperation | null>(null);
   const selectedBlock = useMemo(
     () => design.blocks.find((block) => block.id === selectedId) || null,
@@ -1076,13 +1330,35 @@ function TemplateDesigner({
       return;
     }
 
+    const token = tokenForField(tokenField);
+    const activeEditor = activeRichEditorRef.current;
+
+    if (activeEditor?.dataset.blockId === selectedBlock.id) {
+      activeEditor.focus();
+      document.execCommand("insertText", false, token);
+      syncRichTextElement(activeEditor, selectedBlock);
+      return;
+    }
+
     updateBlock(selectedBlock.id, {
-      text: `${selectedBlock.text || ""} {{${tokenField}}}`.trim(),
+      text: `${selectedBlock.text || ""} ${token}`.trim(),
+      textHtml: `${textBlockHtml(selectedBlock)} ${escapeHtml(token)}`.trim(),
     });
   }
 
-  function handleTextAreaKeyDown(
-    event: KeyboardEvent<HTMLTextAreaElement>,
+  function syncRichTextElement(element: HTMLDivElement, block: TemplateBlock) {
+    const html = sanitizeTemplateHtml(snapMentions(element.innerHTML));
+    const text = htmlToPlainText(html);
+
+    if (html !== element.innerHTML) {
+      element.innerHTML = html;
+    }
+
+    updateBlock(block.id, { text, textHtml: html });
+  }
+
+  function handleRichTextKeyDown(
+    event: KeyboardEvent<HTMLDivElement>,
     block: TemplateBlock,
   ) {
     if (event.key === "Escape") {
@@ -1095,35 +1371,64 @@ function TemplateDesigner({
     }
 
     event.preventDefault();
-    const target = event.currentTarget;
-    const start = target.selectionStart;
-    const end = target.selectionEnd;
-    const nextText = `${target.value.slice(0, start)}  ${target.value.slice(end)}`;
-
-    updateBlock(block.id, { text: nextText });
+    document.execCommand("insertText", false, "  ");
     window.requestAnimationFrame(() => {
-      target.selectionStart = start + 2;
-      target.selectionEnd = start + 2;
+      syncRichTextElement(event.currentTarget, block);
     });
   }
 
-  function handleTextChange(
-    event: ChangeEvent<HTMLTextAreaElement>,
+  function handleRichTextInput(
+    event: FormEvent<HTMLDivElement>,
     block: TemplateBlock,
   ) {
-    const target = event.currentTarget;
-    const cursor = target.selectionStart;
-    const nextText = snapMentions(target.value);
-    const nextCursor = snapMentions(target.value.slice(0, cursor)).length;
+    activeRichEditorRef.current = event.currentTarget;
+    syncRichTextElement(event.currentTarget, block);
+  }
 
-    updateBlock(block.id, { text: nextText });
+  function applyRichTextCommand(command: string, value?: string) {
+    const block = selectedBlock;
+    const editor = activeRichEditorRef.current;
 
-    if (nextText !== target.value) {
-      window.requestAnimationFrame(() => {
-        target.selectionStart = nextCursor;
-        target.selectionEnd = nextCursor;
-      });
+    if (!block || block.type !== "text" || !editor) {
+      return;
     }
+
+    editor.focus();
+    document.execCommand(command, false, value);
+    syncRichTextElement(editor, block);
+  }
+
+  function wrapRichSelection(style: Partial<CSSStyleDeclaration>) {
+    const block = selectedBlock;
+    const editor = activeRichEditorRef.current;
+    const selection = window.getSelection();
+
+    if (!block || block.type !== "text" || !editor || !selection?.rangeCount) {
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+
+    if (range.collapsed || !editor.contains(range.commonAncestorContainer)) {
+      return;
+    }
+
+    const span = document.createElement("span");
+
+    Object.assign(span.style, style);
+
+    try {
+      range.surroundContents(span);
+    } catch {
+      const contents = range.extractContents();
+
+      span.appendChild(contents);
+      range.insertNode(span);
+    }
+
+    selection.removeAllRanges();
+    selection.selectAllChildren(span);
+    syncRichTextElement(editor, block);
   }
 
   function openCanvasEditor(block: TemplateBlock) {
@@ -1231,13 +1536,13 @@ function TemplateDesigner({
             disabled={!dirty || saving}
             onClick={revertTemplate}
           >
-            Revert
+            <span aria-hidden="true">↶</span> Revert
           </button>
           <button
             type="submit"
             disabled={saving || !canSaveTemplate || !design.blocks.length}
           >
-            Save template
+            <span aria-hidden="true">✓</span> Save
           </button>
         </div>
       </div>
@@ -1307,19 +1612,19 @@ function TemplateDesigner({
             <h3>Add block</h3>
             <div className="template-button-grid">
               <button type="button" onClick={() => addBlock("text")}>
-                Text
+                <span aria-hidden="true">T</span> Text
               </button>
               <button type="button" onClick={() => addBlock("image", "")}>
-                Image
+                <span aria-hidden="true">▧</span> Image
               </button>
               <button
                 type="button"
                 onClick={() => addBlock("image", "items.firstImage")}
               >
-                Product image
+                <span aria-hidden="true">▣</span> Product image
               </button>
               <button type="button" onClick={() => addBlock("items")}>
-                Items table
+                <span aria-hidden="true">▦</span> Items table
               </button>
             </div>
           </div>
@@ -1391,14 +1696,14 @@ function TemplateDesigner({
               disabled={!selectedBlock}
               onClick={duplicateSelectedBlock}
             >
-              Duplicate
+              <span aria-hidden="true">⧉</span> Duplicate
             </button>
             <button
               type="button"
               disabled={selectedIndex <= 0}
               onClick={() => moveLayer(-1)}
             >
-              Back
+              <span aria-hidden="true">‹</span> Back
             </button>
             <button
               type="button"
@@ -1407,7 +1712,7 @@ function TemplateDesigner({
               }
               onClick={() => moveLayer(1)}
             >
-              Forward
+              <span aria-hidden="true">›</span> Forward
             </button>
             <button
               type="button"
@@ -1415,7 +1720,7 @@ function TemplateDesigner({
               disabled={!selectedBlock}
               onClick={removeSelectedBlock}
             >
-              Delete
+              <span aria-hidden="true">×</span> Delete
             </button>
           </div>
 
@@ -1473,19 +1778,21 @@ function TemplateDesigner({
                       tabIndex={0}
                     >
                       {editingText ? (
-                        <textarea
-                          ref={inlineTextRef}
+                        <RichTextBox
+                          block={block}
                           className="template-inline-textarea"
-                          value={block.text || ""}
-                          onBlur={() => setEditingTextBlockId(null)}
-                          onChange={(event) => handleTextChange(event, block)}
-                          onClick={(event) => event.stopPropagation()}
-                          onDoubleClick={(event) => event.stopPropagation()}
-                          onKeyDown={(event) => {
-                            event.stopPropagation();
-                            handleTextAreaKeyDown(event, block);
+                          editorRef={(element) => {
+                            inlineTextRef.current = element;
+                            if (element) {
+                              activeRichEditorRef.current = element;
+                            }
                           }}
-                          onPointerDown={(event) => event.stopPropagation()}
+                          onBlur={() => setEditingTextBlockId(null)}
+                          onFocus={(element) => {
+                            activeRichEditorRef.current = element;
+                          }}
+                          onInput={handleRichTextInput}
+                          onKeyDown={handleRichTextKeyDown}
                         />
                       ) : editingItems ? (
                         <div className="template-inline-table-editor">
@@ -1645,16 +1952,85 @@ function TemplateDesigner({
                 </label>
               ) : null}
               {selectedBlock.type === "text" ? (
-                <label>
+                <div className="rich-text-panel">
                   <span>Text</span>
-                  <textarea
-                    value={selectedBlock.text || ""}
-                    onKeyDown={(event) =>
-                      handleTextAreaKeyDown(event, selectedBlock)
-                    }
-                    onChange={(event) => handleTextChange(event, selectedBlock)}
+                  <div className="rich-text-toolbar">
+                    <button
+                      type="button"
+                      title="Bold selected text"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => applyRichTextCommand("bold")}
+                    >
+                      <strong>B</strong>
+                    </button>
+                    <button
+                      type="button"
+                      title="Italic selected text"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => applyRichTextCommand("italic")}
+                    >
+                      <em>I</em>
+                    </button>
+                    <button
+                      type="button"
+                      title="Underline selected text"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => applyRichTextCommand("underline")}
+                    >
+                      <span className="underline-icon">U</span>
+                    </button>
+                    <label>
+                      <span>Color</span>
+                      <input
+                        type="color"
+                        defaultValue="#111827"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onChange={(event) =>
+                          wrapRichSelection({
+                            color: event.currentTarget.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Size</span>
+                      <select
+                        defaultValue=""
+                        onMouseDown={(event) => event.preventDefault()}
+                        onChange={(event) => {
+                          if (event.currentTarget.value) {
+                            wrapRichSelection({
+                              fontSize: `${event.currentTarget.value}px`,
+                            });
+                          }
+                        }}
+                      >
+                        <option value="">Aa</option>
+                        <option value="10">10</option>
+                        <option value="12">12</option>
+                        <option value="14">14</option>
+                        <option value="16">16</option>
+                        <option value="18">18</option>
+                        <option value="22">22</option>
+                        <option value="28">28</option>
+                      </select>
+                    </label>
+                  </div>
+                  <RichTextBox
+                    block={selectedBlock}
+                    className="template-rich-textbox"
+                    editorRef={(element) => {
+                      if (element) {
+                        activeRichEditorRef.current = element;
+                      }
+                    }}
+                    onFocus={(element) => {
+                      activeRichEditorRef.current = element;
+                    }}
+                    onInput={handleRichTextInput}
+                    onKeyDown={handleRichTextKeyDown}
                   />
-                </label>
+                </div>
               ) : null}
               {selectedBlock.type === "text" ? (
                 <div className="token-inserter">
@@ -2001,133 +2377,216 @@ export default function OrderPrinterDashboard() {
   );
 
   return (
-    <s-page heading="COG Order Printer">
-      <div className="printer-shell">
+    <main className="order-printer-app">
+      <header className="app-header">
+        <div>
+          <span className="app-kicker">Packing slips</span>
+          <h1>COG Order Printer</h1>
+        </div>
         {actionData ? (
           <div className={actionData.ok ? "notice success" : "notice error"}>
             {actionData.message}
           </div>
         ) : null}
+      </header>
 
-        <s-section heading="Automation rule">
-          <Form method="post" className="settings-form">
-            <input type="hidden" name="intent" value="save-rule" />
-            <label>
-              <span>Fulfillment location</span>
-              <select name="locationId" defaultValue={defaultLocationId}>
-                {data.locations.map((location) => (
-                  <option key={location.id} value={location.id}>
-                    {location.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>Printer</span>
-              <select name="printerName" defaultValue={defaultPrinterName}>
-                {data.printers.map((printer) => (
-                  <option key={printer.name} value={printer.name}>
-                    {printer.name}
-                    {printer.isDefault ? " (default)" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                name="enabled"
-                defaultChecked={data.rule?.enabled ?? true}
-              />
-              <span>Print new orders for this location</span>
-            </label>
-            <button type="submit" disabled={!canSave || saving}>
-              Save settings
-            </button>
-          </Form>
-          {!data.printers.length ? (
-            <p className="empty-state">
-              No printers have checked in yet. Start the local print agent, then
-              reload this page.
-            </p>
-          ) : null}
-        </s-section>
-
-        <s-section heading="Print agent">
-          <div className="agent-grid">
-            <div>
-              <div className="field-label">Agent token</div>
-              <code className="token">{data.agentToken}</code>
-            </div>
-            <Form method="post">
-              <input type="hidden" name="intent" value="rotate-token" />
-              <button type="submit" disabled={saving}>
-                Rotate token
+      <div className="app-body">
+        <aside className="app-sidebar">
+          <section className="app-card">
+            <div className="app-card-header">Automation rule</div>
+            <Form method="post" className="settings-form">
+              <input type="hidden" name="intent" value="save-rule" />
+              <label>
+                <span>Fulfillment location</span>
+                <select name="locationId" defaultValue={defaultLocationId}>
+                  {data.locations.map((location) => (
+                    <option key={location.id} value={location.id}>
+                      {location.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Printer</span>
+                <select name="printerName" defaultValue={defaultPrinterName}>
+                  {data.printers.map((printer) => (
+                    <option key={printer.name} value={printer.name}>
+                      {printer.name}
+                      {printer.isDefault ? " (default)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  name="enabled"
+                  defaultChecked={data.rule?.enabled ?? true}
+                />
+                <span>Print new orders for this location</span>
+              </label>
+              <button type="submit" disabled={!canSave || saving}>
+                Save settings
               </button>
             </Form>
-          </div>
-          <div className="field-label">Agent config</div>
-          <pre className="command">{agentConfig}</pre>
-          <div className="printer-list">
-            {data.printers.map((printer) => (
-              <div className="printer-row" key={printer.name}>
-                <strong>{printer.name}</strong>
-                <span>{printer.agentName || "local agent"}</span>
-                <span>Last seen {formatDate(printer.lastSeenAt)}</span>
-              </div>
-            ))}
-          </div>
-        </s-section>
+            {!data.printers.length ? (
+              <p className="empty-state">
+                No printers have checked in yet. Start the local print agent,
+                then reload this page.
+              </p>
+            ) : null}
+          </section>
 
-        <s-section heading="Reprint packing slip">
-          <Form method="get" className="inline-action">
-            <input type="hidden" name="reprint" value="1" />
-            <button type="submit" disabled={saving || !data.rule?.enabled}>
-              Reprint Packing Slip
-            </button>
-          </Form>
-          {data.showReprintOrders ? (
-            data.reprintOrders.length ? (
+          <section className="app-card">
+            <div className="app-card-header">Print agent</div>
+            <div className="agent-grid">
+              <div>
+                <div className="field-label">Agent token</div>
+                <code className="token">{data.agentToken}</code>
+              </div>
+              <Form method="post">
+                <input type="hidden" name="intent" value="rotate-token" />
+                <button type="submit" disabled={saving}>
+                  Rotate token
+                </button>
+              </Form>
+            </div>
+            <div className="field-label">Agent config</div>
+            <pre className="command">{agentConfig}</pre>
+            <div className="printer-list">
+              {data.printers.map((printer) => (
+                <div className="printer-row" key={printer.name}>
+                  <strong>{printer.name}</strong>
+                  <span>{printer.agentName || "local agent"}</span>
+                  <span>Last seen {formatDate(printer.lastSeenAt)}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="app-card">
+            <div className="app-card-header">Reprint packing slip</div>
+            <Form method="get" className="inline-action">
+              <input type="hidden" name="reprint" value="1" />
+              <button type="submit" disabled={saving || !data.rule?.enabled}>
+                Reprint Packing Slip
+              </button>
+            </Form>
+            {data.showReprintOrders ? (
+              data.reprintOrders.length ? (
+                <div className="job-table-wrap">
+                  <table className="job-table">
+                    <thead>
+                      <tr>
+                        <th>Order</th>
+                        <th>Ship to</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.reprintOrders.map((order) => (
+                        <tr key={order.id}>
+                          <td>
+                            <strong>{order.name}</strong>
+                            <span className="job-error">
+                              {order.fulfillmentOrderCount} open fulfillment
+                              order
+                              {order.fulfillmentOrderCount === 1
+                                ? ""
+                                : "s"}{" "}
+                              here
+                            </span>
+                          </td>
+                          <td>{order.shipTo}</td>
+                          <td>{order.status}</td>
+                          <td>{formatDate(order.createdAt)}</td>
+                          <td>
+                            <Form method="post">
+                              <input
+                                type="hidden"
+                                name="intent"
+                                value="manual-reprint-order"
+                              />
+                              <input
+                                type="hidden"
+                                name="orderId"
+                                value={order.id}
+                              />
+                              <button type="submit" disabled={saving}>
+                                Print
+                              </button>
+                            </Form>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="empty-state">
+                  No unfulfilled orders are currently assigned to the configured
+                  fulfillment location.
+                </p>
+              )
+            ) : null}
+          </section>
+
+          <section className="app-card">
+            <div className="app-card-header">Recent print jobs</div>
+            {data.jobs.length ? (
               <div className="job-table-wrap">
                 <table className="job-table">
                   <thead>
                     <tr>
                       <th>Order</th>
-                      <th>Ship to</th>
+                      <th>Location</th>
+                      <th>Printer</th>
                       <th>Status</th>
                       <th>Created</th>
                       <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.reprintOrders.map((order) => (
-                      <tr key={order.id}>
+                    {data.jobs.map((job) => (
+                      <tr key={job.id}>
                         <td>
-                          <strong>{order.name}</strong>
-                          <span className="job-error">
-                            {order.fulfillmentOrderCount} open fulfillment order
-                            {order.fulfillmentOrderCount === 1 ? "" : "s"} here
+                          <strong>{job.orderName}</strong>
+                          {job.lastError ? (
+                            <span className="job-error">{job.lastError}</span>
+                          ) : null}
+                        </td>
+                        <td>{job.locationName}</td>
+                        <td>{job.printerName}</td>
+                        <td>
+                          <span
+                            className={`status ${job.status.toLowerCase()}`}
+                          >
+                            {job.status}
                           </span>
                         </td>
-                        <td>{order.shipTo}</td>
-                        <td>{order.status}</td>
-                        <td>{formatDate(order.createdAt)}</td>
+                        <td>{formatDate(job.createdAt)}</td>
                         <td>
-                          <Form method="post">
-                            <input
-                              type="hidden"
-                              name="intent"
-                              value="manual-reprint-order"
-                            />
-                            <input
-                              type="hidden"
-                              name="orderId"
-                              value={order.id}
-                            />
-                            <button type="submit" disabled={saving}>
-                              Print
-                            </button>
-                          </Form>
+                          {job.status === "FAILED" ? (
+                            <Form method="post">
+                              <input
+                                type="hidden"
+                                name="intent"
+                                value="retry-job"
+                              />
+                              <input
+                                type="hidden"
+                                name="jobId"
+                                value={job.id}
+                              />
+                              <button type="submit" disabled={saving}>
+                                Retry
+                              </button>
+                            </Form>
+                          ) : (
+                            "-"
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -2135,81 +2594,20 @@ export default function OrderPrinterDashboard() {
                 </table>
               </div>
             ) : (
-              <p className="empty-state">
-                No unfulfilled orders are currently assigned to the configured
-                fulfillment location.
-              </p>
-            )
-          ) : null}
-        </s-section>
+              <p className="empty-state">No print jobs have been queued yet.</p>
+            )}
+          </section>
+        </aside>
 
-        <s-section heading="Packing slip template">
+        <section className="template-app-panel">
           <TemplateDesigner
             canSaveTemplate={Boolean(data.rule)}
             template={data.template}
             saving={saving}
           />
-        </s-section>
-
-        <s-section heading="Recent print jobs">
-          {data.jobs.length ? (
-            <div className="job-table-wrap">
-              <table className="job-table">
-                <thead>
-                  <tr>
-                    <th>Order</th>
-                    <th>Location</th>
-                    <th>Printer</th>
-                    <th>Status</th>
-                    <th>Created</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.jobs.map((job) => (
-                    <tr key={job.id}>
-                      <td>
-                        <strong>{job.orderName}</strong>
-                        {job.lastError ? (
-                          <span className="job-error">{job.lastError}</span>
-                        ) : null}
-                      </td>
-                      <td>{job.locationName}</td>
-                      <td>{job.printerName}</td>
-                      <td>
-                        <span className={`status ${job.status.toLowerCase()}`}>
-                          {job.status}
-                        </span>
-                      </td>
-                      <td>{formatDate(job.createdAt)}</td>
-                      <td>
-                        {job.status === "FAILED" ? (
-                          <Form method="post">
-                            <input
-                              type="hidden"
-                              name="intent"
-                              value="retry-job"
-                            />
-                            <input type="hidden" name="jobId" value={job.id} />
-                            <button type="submit" disabled={saving}>
-                              Retry
-                            </button>
-                          </Form>
-                        ) : (
-                          "-"
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="empty-state">No print jobs have been queued yet.</p>
-          )}
-        </s-section>
+        </section>
       </div>
-    </s-page>
+    </main>
   );
 }
 
