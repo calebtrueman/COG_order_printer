@@ -51,6 +51,9 @@ const MIN_BLOCK_WIDTH = 32;
 const MIN_BLOCK_HEIGHT = 24;
 const MIN_TEMPLATE_ZOOM = 0.35;
 const MAX_TEMPLATE_ZOOM = 1.4;
+const MIN_OPERATIONS_HEIGHT = 112;
+const DEFAULT_OPERATIONS_HEIGHT = 190;
+const MAX_OPERATIONS_HEIGHT = 360;
 const PAGE_SIZE_OPTIONS = [
   { value: "letter", label: "Letter", width: 816, height: 1056 },
   { value: "a4", label: "A4", width: 794, height: 1123 },
@@ -1078,11 +1081,17 @@ function RichTextBox({
   useEffect(() => {
     const element = localRef.current;
 
-    if (!element || document.activeElement === element) {
+    if (!element) {
       return;
     }
 
-    element.innerHTML = currentHtml;
+    if (document.activeElement === element) {
+      return;
+    }
+
+    if (element.innerHTML !== currentHtml) {
+      element.innerHTML = currentHtml;
+    }
   }, [currentHtml]);
 
   return (
@@ -1091,7 +1100,6 @@ function RichTextBox({
       contentEditable
       data-block-id={block.id}
       data-template-rich-editor={block.id}
-      dangerouslySetInnerHTML={{ __html: currentHtml }}
       aria-multiline="true"
       onBlur={(event) => onBlur?.(event.currentTarget, block)}
       onClick={(event) => event.stopPropagation()}
@@ -1643,6 +1651,24 @@ function TemplateDesigner({
     document.execCommand(command, false);
     rememberRichSelection(editor);
     syncRichTextElement(editor, block);
+  }
+
+  function applyRichTextFontFamily(fontFamily: string) {
+    if (!FONT_FAMILIES.some((font) => font.value === fontFamily)) {
+      return;
+    }
+
+    wrapRichSelection({ fontFamily });
+  }
+
+  function applyRichTextFontSize(fontSize: string) {
+    const size = clamp(Number(fontSize), 7, 72);
+
+    if (!size) {
+      return;
+    }
+
+    wrapRichSelection({ fontSize: `${size}px` });
   }
 
   function wrapRichSelection(style: Partial<CSSStyleDeclaration>, fallback = "") {
@@ -2262,11 +2288,29 @@ function TemplateDesigner({
                       <span className="underline-icon">U</span>
                     </button>
                     <label>
+                      <span>Font</span>
+                      <select
+                        defaultValue=""
+                        onChange={(event) => {
+                          if (event.currentTarget.value) {
+                            applyRichTextFontFamily(event.currentTarget.value);
+                            event.currentTarget.value = "";
+                          }
+                        }}
+                      >
+                        <option value="">Font</option>
+                        {FONT_FAMILIES.map((font) => (
+                          <option key={font.value} value={font.value}>
+                            {font.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
                       <span>Color</span>
                       <input
                         type="color"
                         defaultValue="#111827"
-                        onMouseDown={(event) => event.preventDefault()}
                         onChange={(event) =>
                           wrapRichSelection({
                             color: event.currentTarget.value,
@@ -2278,12 +2322,10 @@ function TemplateDesigner({
                       <span>Size</span>
                       <select
                         defaultValue=""
-                        onMouseDown={(event) => event.preventDefault()}
                         onChange={(event) => {
                           if (event.currentTarget.value) {
-                            wrapRichSelection({
-                              fontSize: `${event.currentTarget.value}px`,
-                            });
+                            applyRichTextFontSize(event.currentTarget.value);
+                            event.currentTarget.value = "";
                           }
                         }}
                       >
@@ -2818,6 +2860,9 @@ export default function OrderPrinterDashboard() {
   const defaultPrinterName =
     data.rule?.printerName || data.printers[0]?.name || "";
   const canSave = Boolean(defaultLocationId && defaultPrinterName);
+  const [operationsHeight, setOperationsHeight] = useState(
+    DEFAULT_OPERATIONS_HEIGHT,
+  );
   const agentConfig = JSON.stringify(
     {
       appUrl: data.appUrl,
@@ -2828,6 +2873,44 @@ export default function OrderPrinterDashboard() {
     null,
     2,
   );
+
+  function startOperationsResize(event: PointerEvent<HTMLButtonElement>) {
+    const splitter = event.currentTarget;
+    const body = splitter.parentElement;
+
+    if (!body) {
+      return;
+    }
+
+    const bodyRect = body.getBoundingClientRect();
+    const maxHeight = Math.min(
+      MAX_OPERATIONS_HEIGHT,
+      Math.max(MIN_OPERATIONS_HEIGHT, bodyRect.height - 360),
+    );
+
+    function resize(moveEvent: globalThis.PointerEvent) {
+      setOperationsHeight(
+        clamp(
+          moveEvent.clientY - bodyRect.top,
+          MIN_OPERATIONS_HEIGHT,
+          maxHeight,
+        ),
+      );
+    }
+
+    function stopResize(upEvent: globalThis.PointerEvent) {
+      splitter.releasePointerCapture(upEvent.pointerId);
+      splitter.removeEventListener("pointermove", resize);
+      splitter.removeEventListener("pointerup", stopResize);
+      splitter.removeEventListener("pointercancel", stopResize);
+    }
+
+    splitter.setPointerCapture(event.pointerId);
+    splitter.addEventListener("pointermove", resize);
+    splitter.addEventListener("pointerup", stopResize);
+    splitter.addEventListener("pointercancel", stopResize);
+    event.preventDefault();
+  }
 
   return (
     <main className="order-printer-app">
@@ -2843,7 +2926,12 @@ export default function OrderPrinterDashboard() {
         ) : null}
       </header>
 
-      <div className="app-body">
+      <div
+        className="app-body"
+        style={
+          { "--operations-height": `${operationsHeight}px` } as CSSProperties
+        }
+      >
         <aside className="app-sidebar">
           <section className="app-card">
             <div className="app-card-header">Automation rule</div>
@@ -2915,75 +3003,65 @@ export default function OrderPrinterDashboard() {
                 </div>
               ))}
             </div>
-          </section>
 
-          <section className="app-card">
-            <div className="app-card-header">Reprint packing slip</div>
-            <Form method="get" className="inline-action">
-              <input type="hidden" name="reprint" value="1" />
-              <button type="submit" disabled={saving || !data.rule?.enabled}>
-                Reprint Packing Slip
-              </button>
-            </Form>
-            {data.showReprintOrders ? (
-              data.reprintOrders.length ? (
-                <div className="job-table-wrap">
-                  <table className="job-table">
-                    <thead>
-                      <tr>
-                        <th>Order</th>
-                        <th>Ship to</th>
-                        <th>Status</th>
-                        <th>Created</th>
-                        <th>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.reprintOrders.map((order) => (
-                        <tr key={order.id}>
-                          <td>
-                            <strong>{order.name}</strong>
-                            <span className="job-error">
-                              {order.fulfillmentOrderCount} open fulfillment
-                              order
-                              {order.fulfillmentOrderCount === 1
-                                ? ""
-                                : "s"}{" "}
-                              here
-                            </span>
-                          </td>
-                          <td>{order.shipTo}</td>
-                          <td>{order.status}</td>
-                          <td>{formatDate(order.createdAt)}</td>
-                          <td>
-                            <Form method="post">
-                              <input
-                                type="hidden"
-                                name="intent"
-                                value="manual-reprint-order"
-                              />
-                              <input
-                                type="hidden"
-                                name="orderId"
-                                value={order.id}
-                              />
-                              <button type="submit" disabled={saving}>
-                                Print
-                              </button>
-                            </Form>
-                          </td>
+            <div className="reprint-panel">
+              <Form method="get" className="inline-action">
+                <input type="hidden" name="reprint" value="1" />
+                <button type="submit" disabled={saving || !data.rule?.enabled}>
+                  Reprint Packing Slip
+                </button>
+              </Form>
+              {data.showReprintOrders ? (
+                data.reprintOrders.length ? (
+                  <div className="job-table-wrap compact-reprint-table">
+                    <table className="job-table">
+                      <thead>
+                        <tr>
+                          <th>Order</th>
+                          <th>Ship to</th>
+                          <th>Action</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p className="empty-state">
-                  No unfulfilled orders are currently assigned to the configured
-                  fulfillment location.
-                </p>
-              )
-            ) : null}
+                      </thead>
+                      <tbody>
+                        {data.reprintOrders.map((order) => (
+                          <tr key={order.id}>
+                            <td>
+                              <strong>{order.name}</strong>
+                              <span className="job-error">
+                                {order.fulfillmentOrderCount} open here
+                              </span>
+                            </td>
+                            <td>{order.shipTo}</td>
+                            <td>
+                              <Form method="post">
+                                <input
+                                  type="hidden"
+                                  name="intent"
+                                  value="manual-reprint-order"
+                                />
+                                <input
+                                  type="hidden"
+                                  name="orderId"
+                                  value={order.id}
+                                />
+                                <button type="submit" disabled={saving}>
+                                  Print
+                                </button>
+                              </Form>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="empty-state">
+                    No unfulfilled orders are currently assigned to this
+                    location.
+                  </p>
+                )
+              ) : null}
+            </div>
           </section>
 
           <section className="app-card">
@@ -3051,6 +3129,26 @@ export default function OrderPrinterDashboard() {
             )}
           </section>
         </aside>
+
+        <button
+          aria-label="Resize operations section"
+          className="app-horizontal-splitter"
+          onKeyDown={(event) => {
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setOperationsHeight((current) =>
+                clamp(current - 24, MIN_OPERATIONS_HEIGHT, MAX_OPERATIONS_HEIGHT),
+              );
+            } else if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setOperationsHeight((current) =>
+                clamp(current + 24, MIN_OPERATIONS_HEIGHT, MAX_OPERATIONS_HEIGHT),
+              );
+            }
+          }}
+          onPointerDown={startOperationsResize}
+          type="button"
+        />
 
         <section className="template-app-panel">
           <TemplateDesigner

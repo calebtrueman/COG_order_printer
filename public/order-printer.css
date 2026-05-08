@@ -54,7 +54,7 @@ body {
 .app-body {
   display: grid;
   gap: 10px;
-  grid-template-rows: minmax(128px, 240px) minmax(0, 1fr);
+  grid-template-rows: var(--operations-height, 190px) 8px minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
   padding: 10px;
@@ -64,10 +64,36 @@ body {
 .app-sidebar {
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr) minmax(320px, 1.15fr) minmax(320px, 1.15fr);
+  grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1.2fr) minmax(440px, 1.6fr);
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
+}
+
+.app-horizontal-splitter {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  cursor: row-resize;
+  display: flex;
+  justify-content: center;
+  outline: none;
+  padding: 0;
+  touch-action: none;
+}
+
+.app-horizontal-splitter::before {
+  background: #d1d5db;
+  border-radius: 999px;
+  content: "";
+  display: block;
+  height: 4px;
+  width: 84px;
+}
+
+.app-horizontal-splitter:hover::before,
+.app-horizontal-splitter:focus-visible::before {
+  background: #0891b2;
 }
 
 .app-card,
@@ -215,7 +241,7 @@ body {
   align-items: end;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   margin-bottom: 10px;
 }
 
@@ -240,7 +266,19 @@ body {
   display: grid;
   gap: 8px;
   margin-top: 14px;
-  max-height: 92px;
+  max-height: 74px;
+  overflow: auto;
+}
+
+.reprint-panel {
+  border-top: 1px solid #eef1f5;
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.compact-reprint-table {
+  max-height: 118px;
   overflow: auto;
 }
 
@@ -427,7 +465,11 @@ body {
 .rich-text-toolbar select {
   min-height: 28px;
   padding: 3px 6px;
-  width: 56px;
+  width: 76px;
+}
+
+.rich-text-toolbar label:first-of-type select {
+  width: 118px;
 }
 
 .template-rich-textbox {
@@ -1070,7 +1112,7 @@ body {
 
 @media (max-width: 1180px) {
   .app-body {
-    grid-template-rows: minmax(160px, 260px) minmax(0, 1fr);
+    grid-template-rows: var(--operations-height, 210px) 8px minmax(0, 1fr);
   }
 
   .app-sidebar {
@@ -1103,7 +1145,7 @@ body {
   }
 
   .app-body {
-    grid-template-rows: minmax(180px, 300px) minmax(0, 1fr);
+    grid-template-rows: var(--operations-height, 240px) 8px minmax(0, 1fr);
     padding: 8px;
   }
 
