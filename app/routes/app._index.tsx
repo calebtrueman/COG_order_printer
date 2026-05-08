@@ -8,6 +8,7 @@ import {
   useActionData,
   useLoaderData,
   useNavigation,
+  useRevalidator,
   useRouteError,
 } from "react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -4320,15 +4321,16 @@ export default function OrderPrinterDashboard() {
   const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
+  const revalidator = useRevalidator();
   const saving = navigation.state === "submitting";
   const defaultLocationId =
     data.rule?.locationId || data.locations[0]?.id || "";
   const defaultPrinterName =
     data.rule?.printerName || data.printers[0]?.name || "";
   const canSave = Boolean(defaultLocationId && defaultPrinterName);
-  const [activeAppTab, setActiveAppTab] = useState<AppTab>("template");
+  const [activeAppTab, setActiveAppTab] = useState<AppTab>("operations");
   const [activeOperationsTab, setActiveOperationsTab] =
-    useState<OperationsTab>("rule");
+    useState<OperationsTab>("jobs");
   const agentConfig = JSON.stringify(
     {
       appUrl: data.appUrl,
@@ -4339,6 +4341,27 @@ export default function OrderPrinterDashboard() {
     null,
     2,
   );
+
+  useEffect(() => {
+    if (activeAppTab !== "operations") {
+      return;
+    }
+
+    const intervalMs = activeOperationsTab === "jobs" ? 2000 : 5000;
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+
+      if (navigation.state !== "idle" || revalidator.state !== "idle") {
+        return;
+      }
+
+      revalidator.revalidate();
+    }, intervalMs);
+
+    return () => window.clearInterval(intervalId);
+  }, [activeAppTab, activeOperationsTab, navigation.state, revalidator]);
 
   return (
     <main className="order-printer-app">
