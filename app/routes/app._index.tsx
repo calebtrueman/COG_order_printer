@@ -16,6 +16,7 @@ import type {
   FormEvent,
   KeyboardEvent,
   PointerEvent,
+  WheelEvent,
 } from "react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
@@ -48,6 +49,11 @@ const DEFAULT_PAGE_HEIGHT = 1056;
 const GRID_SIZE = 8;
 const MIN_BLOCK_WIDTH = 32;
 const MIN_BLOCK_HEIGHT = 24;
+const MIN_TEMPLATE_ZOOM = 0.35;
+const MAX_TEMPLATE_ZOOM = 1.4;
+const MIN_APP_SIDEBAR_WIDTH = 260;
+const DEFAULT_APP_SIDEBAR_WIDTH = 332;
+const MIN_TEMPLATE_PANEL_WIDTH = 720;
 const PAGE_SIZE_OPTIONS = [
   { value: "letter", label: "Letter", width: 816, height: 1056 },
   { value: "a4", label: "A4", width: 794, height: 1123 },
@@ -254,6 +260,10 @@ function clamp(value: number, min: number, max: number) {
 
 function clampFloat(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Math.round(value * 100) / 100));
+}
+
+function normalizeZoom(value: number) {
+  return clampFloat(value, MIN_TEMPLATE_ZOOM, MAX_TEMPLATE_ZOOM);
 }
 
 type ResizeHandle = "nw" | "ne" | "sw" | "se";
@@ -552,7 +562,8 @@ function lineBreaks(value: string) {
 function richTextPreview(block: TemplateBlock) {
   if (block.textHtml) {
     return (
-      <span
+      <div
+        className="template-rich-preview"
         dangerouslySetInnerHTML={{
           __html: sampleTextHtml(block),
         }}
@@ -736,6 +747,24 @@ function previewStyle(block: TemplateBlock): CSSProperties {
   };
 }
 
+function richTextEditorStyle(block: TemplateBlock): CSSProperties {
+  return {
+    fontFamily: block.fontFamily,
+    fontSize: block.fontSize || 12,
+    fontWeight: block.fontWeight || "400",
+    fontStyle: block.italic ? "italic" : "normal",
+    lineHeight: block.lineHeight || 1.4,
+    textDecoration: block.underline ? "underline" : "none",
+    textTransform: block.uppercase ? "uppercase" : "none",
+    textAlign: block.align || "left",
+    color: block.color || "#111827",
+    background:
+      block.background && block.background !== "transparent"
+        ? block.background
+        : "#ffffff",
+  };
+}
+
 function createTemplateBlock(
   type: TemplateBlock["type"],
   field: string,
@@ -910,7 +939,7 @@ function TemplateBlockPreview({ block }: { block: TemplateBlock }) {
   }
 
   if (block.type === "text") {
-    return <span>{richTextPreview(block)}</span>;
+    return <>{richTextPreview(block)}</>;
   }
 
   return <span>{lineBreaks(fieldSample(block.field))}</span>;
@@ -924,6 +953,7 @@ function RichTextBox({
   onKeyDown,
   onFocus,
   onBlur,
+  style,
 }: {
   block: TemplateBlock;
   className: string;
@@ -934,10 +964,11 @@ function RichTextBox({
     block: TemplateBlock,
   ) => void;
   onFocus?: (element: HTMLDivElement, block: TemplateBlock) => void;
-  onBlur?: () => void;
+  onBlur?: (element: HTMLDivElement, block: TemplateBlock) => void;
+  style?: CSSProperties;
 }) {
   const localRef = useRef<HTMLDivElement | null>(null);
-  const initialHtml = textBlockHtml(block);
+  const currentHtml = textBlockHtml(block);
 
   useEffect(() => {
     const element = localRef.current;
@@ -946,16 +977,18 @@ function RichTextBox({
       return;
     }
 
-    element.innerHTML = textBlockHtml(block);
-  }, [block]);
+    element.innerHTML = currentHtml;
+  }, [currentHtml]);
 
   return (
     <div
       className={className}
       contentEditable
       data-block-id={block.id}
-      dangerouslySetInnerHTML={{ __html: initialHtml }}
-      onBlur={onBlur}
+      data-template-rich-editor={block.id}
+      dangerouslySetInnerHTML={{ __html: currentHtml }}
+      aria-multiline="true"
+      onBlur={(event) => onBlur?.(event.currentTarget, block)}
       onClick={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
       onFocus={(event) => onFocus?.(event.currentTarget, block)}
@@ -967,6 +1000,7 @@ function RichTextBox({
         editorRef?.(element);
       }}
       role="textbox"
+      style={style}
       suppressContentEditableWarning
       tabIndex={0}
     />
@@ -1000,6 +1034,7 @@ function TemplateDesigner({
   );
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const inlineTextRef = useRef<HTMLDivElement | null>(null);
+  const inspectorTextRef = useRef<HTMLDivElement | null>(null);
   const activeRichEditorRef = useRef<HTMLDivElement | null>(null);
   const operationRef = useRef<CanvasOperation | null>(null);
   const selectedBlock = useMemo(
@@ -1293,6 +1328,24 @@ function TemplateDesigner({
     operationRef.current = null;
   }
 
+  function handleStageWheel(event: WheelEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement;
+
+    if (
+      target.closest(
+        "button, input, select, textarea, [contenteditable='true']",
+      ) ||
+      !target.closest(".template-canvas-space")
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    setZoom((current) =>
+      normalizeZoom(current + (event.deltaY < 0 ? 0.05 : -0.05)),
+    );
+  }
+
   function nudgeSelectedBlock(deltaX: number, deltaY: number) {
     if (!selectedBlock) {
       return;
@@ -1340,10 +1393,34 @@ function TemplateDesigner({
       return;
     }
 
+    const nextHtml = `${textBlockHtml(selectedBlock)} ${escapeHtml(token)}`.trim();
+
+    syncRichTextEditors(selectedBlock.id, nextHtml);
     updateBlock(selectedBlock.id, {
       text: `${selectedBlock.text || ""} ${token}`.trim(),
-      textHtml: `${textBlockHtml(selectedBlock)} ${escapeHtml(token)}`.trim(),
+      textHtml: nextHtml,
     });
+  }
+
+  function syncRichTextEditors(
+    blockId: string,
+    html: string,
+    source?: HTMLDivElement,
+  ) {
+    document
+      .querySelectorAll<HTMLDivElement>("[data-template-rich-editor]")
+      .forEach((editor) => {
+        if (
+          editor === source ||
+          editor.dataset.templateRichEditor !== blockId
+        ) {
+          return;
+        }
+
+        if (editor.innerHTML !== html) {
+          editor.innerHTML = html;
+        }
+      });
   }
 
   function syncRichTextElement(element: HTMLDivElement, block: TemplateBlock) {
@@ -1354,6 +1431,7 @@ function TemplateDesigner({
       element.innerHTML = html;
     }
 
+    syncRichTextEditors(block.id, html, element);
     updateBlock(block.id, { text, textHtml: html });
   }
 
@@ -1673,7 +1751,9 @@ function TemplateDesigner({
               <span>Zoom</span>
               <select
                 value={zoom}
-                onChange={(event) => setZoom(Number(event.currentTarget.value))}
+                onChange={(event) =>
+                  setZoom(normalizeZoom(Number(event.currentTarget.value)))
+                }
               >
                 <option value={0.5}>50%</option>
                 <option value={0.6}>60%</option>
@@ -1724,7 +1804,7 @@ function TemplateDesigner({
             </button>
           </div>
 
-          <div className="template-stage">
+          <div className="template-stage" onWheel={handleStageWheel}>
             <div
               className="template-canvas-space"
               style={{
@@ -1782,17 +1862,30 @@ function TemplateDesigner({
                           block={block}
                           className="template-inline-textarea"
                           editorRef={(element) => {
-                            inlineTextRef.current = element;
-                            if (element) {
-                              activeRichEditorRef.current = element;
+                            if (
+                              !element &&
+                              inlineTextRef.current &&
+                              activeRichEditorRef.current ===
+                                inlineTextRef.current
+                            ) {
+                              activeRichEditorRef.current = null;
                             }
+
+                            inlineTextRef.current = element;
                           }}
-                          onBlur={() => setEditingTextBlockId(null)}
+                          onBlur={(element) => {
+                            if (activeRichEditorRef.current === element) {
+                              activeRichEditorRef.current = null;
+                            }
+
+                            setEditingTextBlockId(null);
+                          }}
                           onFocus={(element) => {
                             activeRichEditorRef.current = element;
                           }}
                           onInput={handleRichTextInput}
                           onKeyDown={handleRichTextKeyDown}
+                          style={richTextEditorStyle(block)}
                         />
                       ) : editingItems ? (
                         <div className="template-inline-table-editor">
@@ -2020,15 +2113,22 @@ function TemplateDesigner({
                     block={selectedBlock}
                     className="template-rich-textbox"
                     editorRef={(element) => {
-                      if (element) {
-                        activeRichEditorRef.current = element;
+                      if (
+                        !element &&
+                        inspectorTextRef.current &&
+                        activeRichEditorRef.current === inspectorTextRef.current
+                      ) {
+                        activeRichEditorRef.current = null;
                       }
+
+                      inspectorTextRef.current = element;
                     }}
                     onFocus={(element) => {
                       activeRichEditorRef.current = element;
                     }}
                     onInput={handleRichTextInput}
                     onKeyDown={handleRichTextKeyDown}
+                    style={richTextEditorStyle(selectedBlock)}
                   />
                 </div>
               ) : null}
@@ -2365,6 +2465,7 @@ export default function OrderPrinterDashboard() {
   const defaultPrinterName =
     data.rule?.printerName || data.printers[0]?.name || "";
   const canSave = Boolean(defaultLocationId && defaultPrinterName);
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_APP_SIDEBAR_WIDTH);
   const agentConfig = JSON.stringify(
     {
       appUrl: data.appUrl,
@@ -2375,6 +2476,44 @@ export default function OrderPrinterDashboard() {
     null,
     2,
   );
+
+  function startAppSidebarResize(event: PointerEvent<HTMLElement>) {
+    const splitter = event.currentTarget;
+    const body = splitter.parentElement;
+
+    if (!body) {
+      return;
+    }
+
+    const bodyRect = body.getBoundingClientRect();
+    const maxWidth = Math.max(
+      MIN_APP_SIDEBAR_WIDTH,
+      bodyRect.width - MIN_TEMPLATE_PANEL_WIDTH,
+    );
+
+    function resize(moveEvent: globalThis.PointerEvent) {
+      setSidebarWidth(
+        clamp(
+          moveEvent.clientX - bodyRect.left,
+          MIN_APP_SIDEBAR_WIDTH,
+          maxWidth,
+        ),
+      );
+    }
+
+    function stopResize(upEvent: globalThis.PointerEvent) {
+      splitter.releasePointerCapture(upEvent.pointerId);
+      splitter.removeEventListener("pointermove", resize);
+      splitter.removeEventListener("pointerup", stopResize);
+      splitter.removeEventListener("pointercancel", stopResize);
+    }
+
+    splitter.setPointerCapture(event.pointerId);
+    splitter.addEventListener("pointermove", resize);
+    splitter.addEventListener("pointerup", stopResize);
+    splitter.addEventListener("pointercancel", stopResize);
+    event.preventDefault();
+  }
 
   return (
     <main className="order-printer-app">
@@ -2390,7 +2529,10 @@ export default function OrderPrinterDashboard() {
         ) : null}
       </header>
 
-      <div className="app-body">
+      <div
+        className="app-body"
+        style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+      >
         <aside className="app-sidebar">
           <section className="app-card">
             <div className="app-card-header">Automation rule</div>
@@ -2598,6 +2740,26 @@ export default function OrderPrinterDashboard() {
             )}
           </section>
         </aside>
+
+        <button
+          aria-label="Resize operations panel"
+          className="app-splitter"
+          onKeyDown={(event) => {
+            if (event.key === "ArrowLeft") {
+              event.preventDefault();
+              setSidebarWidth((current) =>
+                clamp(current - 24, MIN_APP_SIDEBAR_WIDTH, 620),
+              );
+            } else if (event.key === "ArrowRight") {
+              event.preventDefault();
+              setSidebarWidth((current) =>
+                clamp(current + 24, MIN_APP_SIDEBAR_WIDTH, 620),
+              );
+            }
+          }}
+          onPointerDown={startAppSidebarResize}
+          type="button"
+        />
 
         <section className="template-app-panel">
           <TemplateDesigner
