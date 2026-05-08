@@ -1982,5 +1982,10 @@ body {
 
 .template-editor .template-stage {
   min-height: 0 !important;
+  overscroll-behavior: auto !important;
   overflow: scroll !important;
+}
+
+.template-editor .template-inline-textarea {
+  overflow: visible !important;
 }

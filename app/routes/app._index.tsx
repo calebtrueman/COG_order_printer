@@ -1954,17 +1954,6 @@ function TemplateDesigner({
 
   function handleStageWheel(event: WheelEvent<HTMLDivElement>) {
     if (!(event.metaKey || event.ctrlKey)) {
-      const multiplier =
-        event.deltaMode === 1
-          ? 16
-          : event.deltaMode === 2
-            ? event.currentTarget.clientHeight
-            : 1;
-
-      event.currentTarget.scrollLeft += event.deltaX * multiplier;
-      event.currentTarget.scrollTop += event.deltaY * multiplier;
-      event.preventDefault();
-      event.stopPropagation();
       return;
     }
 
@@ -2270,6 +2259,16 @@ function TemplateDesigner({
     }
   }
 
+  function rememberActiveRichSelection() {
+    const editor = activeRichEditorRef.current;
+
+    if (!editor?.isConnected) {
+      return;
+    }
+
+    rememberRichSelection(editor);
+  }
+
   function restoreRichSelection(editor: HTMLDivElement) {
     const savedSelection = richSelectionRef.current;
 
@@ -2344,7 +2343,10 @@ function TemplateDesigner({
     wrapRichSelection({ lineHeight: String(size) });
   }
 
-  function blockPatchFromRichStyle(style: Partial<CSSStyleDeclaration>) {
+  function blockPatchFromRichStyle(
+    style: Partial<CSSStyleDeclaration>,
+    block?: TemplateBlock,
+  ) {
     const patch: Partial<TemplateBlock> = {};
 
     if (style.fontFamily) {
@@ -2375,6 +2377,32 @@ function TemplateDesigner({
       patch.color = style.color;
     }
 
+    if (block?.type === "items") {
+      patch.itemColumns = normalizeItemColumns(block.itemColumns).map(
+        (column) => ({
+          ...column,
+          ...(patch.fontSize
+            ? {
+                labelFontSize: patch.fontSize,
+                valueFontSize: patch.fontSize,
+              }
+            : {}),
+          ...(patch.fontWeight
+            ? {
+                labelFontWeight: patch.fontWeight,
+                valueFontWeight: patch.fontWeight,
+              }
+            : {}),
+          ...(patch.color
+            ? {
+                labelColor: patch.color,
+                valueColor: patch.color,
+              }
+            : {}),
+        }),
+      );
+    }
+
     return patch;
   }
 
@@ -2388,15 +2416,21 @@ function TemplateDesigner({
         ? design.blocks.find((item) => item.id === editor.dataset.blockId)
         : selectedBlock) || null;
 
-    if (!block || block.type !== "text") {
+    if (!block) {
       return;
     }
 
     if (!editor) {
-      const patch = blockPatchFromRichStyle(style);
+      const patch = blockPatchFromRichStyle(style, block);
 
       updateBlock(block.id, patch);
-      setActiveTextFormat(textFormatFromBlock({ ...block, ...patch }));
+      if (block.type === "text") {
+        setActiveTextFormat(textFormatFromBlock({ ...block, ...patch }));
+      }
+      return;
+    }
+
+    if (block.type !== "text") {
       return;
     }
 
@@ -2421,7 +2455,7 @@ function TemplateDesigner({
         return;
       }
 
-      const blockPatch = blockPatchFromRichStyle(style);
+      const blockPatch = blockPatchFromRichStyle(style, block);
 
       updateBlock(block.id, blockPatch);
       setActiveTextFormat(textFormatFromBlock({ ...block, ...blockPatch }));
@@ -2453,6 +2487,7 @@ function TemplateDesigner({
     selection.selectAllChildren(span);
     rememberRichSelection(editor);
     syncRichTextElement(editor, block);
+    setActiveTextFormat(textFormatFromEditorSelection(editor, block));
   }
 
   function openCanvasEditor(block: TemplateBlock) {
@@ -2786,7 +2821,10 @@ function TemplateDesigner({
           </button>
         </div>
 
-        <div className="word-formatbar">
+        <div
+          className="word-formatbar"
+          onPointerDownCapture={rememberActiveRichSelection}
+        >
           <label>
             <span>Font</span>
             <select
