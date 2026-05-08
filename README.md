@@ -46,25 +46,24 @@ Build the self-contained Windows service package:
 npm run agent:windows
 ```
 
-The build output is `dist/COGOrderPrinterAgent-windows-x64.zip`. Copy that zip to the Windows shipping computer, extract it somewhere permanent like `C:\COGOrderPrinterAgent`, then run PowerShell as Administrator:
+The build output is `dist/COGOrderPrinterAgent-windows-x64.zip`. Copy that zip to the Windows shipping computer and extract it somewhere permanent like `C:\COGOrderPrinterAgent`.
 
-```powershell
-.\install-service.ps1
-```
+No PowerShell scripts are required. Right-click `COGOrderPrinterAgentSetup.exe` and choose **Run as administrator**.
 
-The first run creates `agent-config.json`. Paste the `appUrl` and `token` shown in the Shopify app's Print agent section, save the file, then run `.\install-service.ps1` again.
+The first run creates `agent-config.json` and opens it in Notepad. Paste the `appUrl` and `token` shown in the Shopify app's Print agent section, save, close Notepad, and setup will continue.
 
 The package includes:
 
 - `COGOrderPrinterAgent.exe`, a bundled Node runtime and agent
+- `COGOrderPrinterAgentSetup.exe`, the installer/config/service-control executable
 - `COGOrderPrinterAgent.Service.exe`, a WinSW service wrapper
 - `SumatraPDF.exe`, used for silent PDF printing to a named Windows printer
-- PowerShell scripts to install, restart, uninstall, and test the service
 
 Windows notes:
 
 - Microsoft Edge or Google Chrome must be installed for HTML-to-PDF rendering. Edge is already present on normal Windows 10/11 installs.
-- If the target printer is installed only for one Windows user, install the service under that account: `.\install-service.ps1 -Username ".\shipping-user"`.
+- Use `COGOrderPrinterAgentSetup.exe run` from an Administrator Command Prompt to test in the foreground before installing the service.
+- Use `COGOrderPrinterAgentSetup.exe restart`, `status`, or `uninstall` for service control.
 - Leave the service set to Automatic. After a reboot, service restart, sleep, or lid close/wake cycle, it will register printers, reconcile missed open orders since the latest automatic print, then print queued jobs.
 - Logs are written to the package's `logs` folder.
 

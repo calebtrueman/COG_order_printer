@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,6 +8,7 @@ const rootDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(rootDir, "dist", "windows-agent");
 const cacheDir = join(rootDir, ".cache", "windows-agent");
 const agentExe = join(outDir, "COGOrderPrinterAgent.exe");
+const setupExe = join(outDir, "COGOrderPrinterAgentSetup.exe");
 const serviceExe = join(outDir, "COGOrderPrinterAgent.Service.exe");
 const sumatraSource = join(
   rootDir,
@@ -103,116 +104,35 @@ async function writeAgentFiles() {
   );
 
   await writeFile(
-    join(outDir, "install-service.ps1"),
-    `param(
-  [string]$Username = ""
-)
-
-$ErrorActionPreference = "Stop"
-$Base = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Config = Join-Path $Base "agent-config.json"
-$Example = Join-Path $Base "agent-config.example.json"
-$Service = Join-Path $Base "COGOrderPrinterAgent.Service.exe"
-
-function Assert-Administrator {
-  $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-  $Principal = [Security.Principal.WindowsPrincipal]::new($Identity)
-  if (-not $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw "Run this script from an elevated PowerShell window."
-  }
-}
-
-Assert-Administrator
-Set-Location $Base
-
-if (-not (Test-Path $Config)) {
-  Copy-Item $Example $Config
-  Write-Host "Created agent-config.json. Edit it with the app URL and token, then run install-service.ps1 again."
-  exit 1
-}
-
-$Json = Get-Content $Config -Raw | ConvertFrom-Json
-if (-not $Json.appUrl -or -not $Json.token -or $Json.token -eq "paste-token-from-shopify-app") {
-  throw "agent-config.json needs appUrl and token before installing the service."
-}
-
-& $Service install
-
-if ($Username) {
-  $Password = Read-Host "Password for $Username" -AsSecureString
-  $Ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
-  try {
-    $Plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($Ptr)
-    sc.exe config COGOrderPrinterAgent obj= $Username password= $Plain | Out-Host
-  } finally {
-    if ($Ptr -ne [IntPtr]::Zero) {
-      [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($Ptr)
-    }
-  }
-}
-
-& $Service start
-Write-Host "COG Order Printer Agent service installed and started."
-`,
-  );
-
-  await writeFile(
-    join(outDir, "uninstall-service.ps1"),
-    `$ErrorActionPreference = "Stop"
-$Base = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Service = Join-Path $Base "COGOrderPrinterAgent.Service.exe"
-Set-Location $Base
-& $Service stop
-& $Service uninstall
-Write-Host "COG Order Printer Agent service stopped and uninstalled."
-`,
-  );
-
-  await writeFile(
-    join(outDir, "restart-service.ps1"),
-    `$ErrorActionPreference = "Stop"
-$Base = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Service = Join-Path $Base "COGOrderPrinterAgent.Service.exe"
-Set-Location $Base
-& $Service restart
-Write-Host "COG Order Printer Agent service restarted."
-`,
-  );
-
-  await writeFile(
-    join(outDir, "run-console.ps1"),
-    `$ErrorActionPreference = "Stop"
-$Base = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $Base
-& (Join-Path $Base "COGOrderPrinterAgent.exe")
-`,
-  );
-
-  await writeFile(
     join(outDir, "README-WINDOWS.txt"),
     `COG Order Printer Agent for Windows
 
 This folder is self-contained for a Windows shipping computer. It does not need Node.js, npm, Shopify CLI, Git, or any development tools.
+It also does not require PowerShell scripts. Installation and service control are handled by executable files.
 
 Files:
 - COGOrderPrinterAgent.exe: the print polling agent
+- COGOrderPrinterAgentSetup.exe: installer/config/service-control executable
 - COGOrderPrinterAgent.Service.exe: Windows service wrapper
 - SumatraPDF.exe: PDF print helper
 - agent-config.json: local app URL/token config
 
 Install:
 1. Copy this folder to the Windows machine, for example C:\\COGOrderPrinterAgent.
-2. Open PowerShell as Administrator in that folder.
-3. Run: .\\install-service.ps1
-4. If agent-config.json was created, edit token/appUrl and run .\\install-service.ps1 again.
+2. Right-click COGOrderPrinterAgentSetup.exe and choose Run as administrator.
+3. If Notepad opens, paste the token from the Shopify app into agent-config.json, save, and close Notepad.
+4. Setup will install and start the Windows service.
 
-If the printer is installed only for a specific Windows user, install the service under that user:
+Useful executable commands from an Administrator Command Prompt:
 
-.\\install-service.ps1 -Username ".\\shipping-user"
+COGOrderPrinterAgentSetup.exe install
+COGOrderPrinterAgentSetup.exe config
+COGOrderPrinterAgentSetup.exe run
+COGOrderPrinterAgentSetup.exe restart
+COGOrderPrinterAgentSetup.exe status
+COGOrderPrinterAgentSetup.exe uninstall
 
-Before installing, you can test in the foreground:
-
-.\\run-console.ps1
+Use "run" before installing if you want to test in the foreground.
 
 Logs are written to the logs folder next to the service executable.
 
@@ -266,8 +186,25 @@ function buildAgentExe() {
   ]);
 }
 
+function buildSetupExe() {
+  const npx = process.platform === "win32" ? "npx.cmd" : "npx";
+
+  run(npx, [
+    "pkg",
+    "scripts/windows-agent-manager.mjs",
+    "--targets",
+    "node20-win-x64",
+    "--output",
+    setupExe,
+  ]);
+}
+
 function createZip() {
   const zipPath = join(rootDir, "dist", "COGOrderPrinterAgent-windows-x64.zip");
+
+  if (existsSync(zipPath)) {
+    rmSync(zipPath);
+  }
 
   if (process.platform === "win32") {
     run("powershell.exe", [
@@ -292,6 +229,8 @@ await mkdir(outDir, { recursive: true });
 
 console.log("Building Windows agent executable...");
 buildAgentExe();
+console.log("Building Windows setup executable...");
+buildSetupExe();
 await copyFile(sumatraSource, join(outDir, "SumatraPDF.exe"));
 await ensureWindowsServiceWrapper();
 await writeAgentFiles();
