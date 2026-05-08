@@ -61,6 +61,35 @@ body {
   width: 100%;
 }
 
+.main-tabs {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #d9dee8;
+  border-radius: 8px;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+}
+
+.main-tabs button {
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #111827;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  min-height: 34px;
+  padding: 7px 12px;
+}
+
+.main-tabs button.active {
+  background: #111827;
+  border-color: #111827;
+  color: #ffffff;
+}
+
 .app-sidebar {
   display: grid;
   gap: 10px;

@@ -52,6 +52,7 @@ const MIN_BLOCK_WIDTH = 32;
 const MIN_BLOCK_HEIGHT = 24;
 const MIN_TEMPLATE_ZOOM = 0.35;
 const MAX_TEMPLATE_ZOOM = 1.4;
+type AppTab = "template" | "operations";
 type OperationsTab = "rule" | "agent" | "jobs";
 const PAGE_SIZE_OPTIONS = [
   { value: "letter", label: "Letter", width: 816, height: 1056 },
@@ -148,6 +149,11 @@ type EditorItemColumn = {
   valueFontSize: number;
   valueFontWeight: string;
   valueColor: string;
+};
+type RichTextSelection = {
+  blockId: string;
+  start: number;
+  end: number;
 };
 
 const TEMPLATE_FIELD_GROUPS: { label: string; fields: TemplateField[] }[] = [
@@ -1058,6 +1064,115 @@ function TemplateBlockPreview({ block }: { block: TemplateBlock }) {
   return <span>{lineBreaks(fieldSample(block.field))}</span>;
 }
 
+function editorSelectionOffsets(editor: HTMLDivElement) {
+  const selection = window.getSelection();
+
+  if (!selection?.rangeCount) {
+    return null;
+  }
+
+  const range = selection.getRangeAt(0);
+
+  if (!editor.contains(range.commonAncestorContainer)) {
+    return null;
+  }
+
+  const startRange = range.cloneRange();
+  startRange.selectNodeContents(editor);
+  startRange.setEnd(range.startContainer, range.startOffset);
+
+  const endRange = range.cloneRange();
+  endRange.selectNodeContents(editor);
+  endRange.setEnd(range.endContainer, range.endOffset);
+
+  return {
+    start: startRange.toString().length,
+    end: endRange.toString().length,
+  };
+}
+
+function textNodeAtOffset(editor: HTMLDivElement, offset: number) {
+  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+  let remaining = Math.max(0, offset);
+  let node = walker.nextNode();
+  let lastTextNode: Text | null = null;
+
+  while (node) {
+    const textNode = node as Text;
+    const length = textNode.textContent?.length || 0;
+
+    lastTextNode = textNode;
+
+    if (remaining <= length) {
+      return { node: textNode, offset: remaining };
+    }
+
+    remaining -= length;
+    node = walker.nextNode();
+  }
+
+  if (lastTextNode) {
+    return {
+      node: lastTextNode,
+      offset: lastTextNode.textContent?.length || 0,
+    };
+  }
+
+  return null;
+}
+
+function restoreEditorSelection(
+  editor: HTMLDivElement,
+  selectionOffsets: { start: number; end: number },
+) {
+  const selection = window.getSelection();
+
+  if (!selection) {
+    return;
+  }
+
+  const start = textNodeAtOffset(editor, selectionOffsets.start);
+  const end = textNodeAtOffset(editor, selectionOffsets.end);
+  const range = document.createRange();
+
+  if (!start || !end) {
+    range.selectNodeContents(editor);
+    range.collapse(false);
+  } else {
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+  }
+
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function setEditorHtml(editor: HTMLDivElement, html: string) {
+  const offsets =
+    document.activeElement === editor ? editorSelectionOffsets(editor) : null;
+
+  editor.innerHTML = html;
+
+  if (offsets) {
+    restoreEditorSelection(editor, offsets);
+  }
+}
+
+function selectEditorContents(editor: HTMLDivElement) {
+  const selection = window.getSelection();
+
+  if (!selection) {
+    return null;
+  }
+
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  return range;
+}
+
 function RichTextBox({
   block,
   className,
@@ -1097,7 +1212,7 @@ function RichTextBox({
     }
 
     if (element.innerHTML !== currentHtml) {
-      element.innerHTML = currentHtml;
+      setEditorHtml(element, currentHtml);
     }
   }, [currentHtml]);
 
@@ -1119,6 +1234,9 @@ function RichTextBox({
       onPointerDown={(event) => event.stopPropagation()}
       ref={(element) => {
         localRef.current = element;
+        if (element && !element.innerHTML) {
+          element.innerHTML = currentHtml;
+        }
         editorRef?.(element);
       }}
       role="textbox"
@@ -1160,7 +1278,7 @@ function TemplateDesigner({
   const inlineTextRef = useRef<HTMLDivElement | null>(null);
   const inspectorTextRef = useRef<HTMLDivElement | null>(null);
   const activeRichEditorRef = useRef<HTMLDivElement | null>(null);
-  const richSelectionRef = useRef<Range | null>(null);
+  const richSelectionRef = useRef<RichTextSelection | null>(null);
   const operationRef = useRef<CanvasOperation | null>(null);
   const selectedBlock = useMemo(
     () => design.blocks.find((block) => block.id === selectedId) || null,
@@ -1390,7 +1508,7 @@ function TemplateDesigner({
 
     if (
       target.dataset.resizeHandle ||
-      target.closest("button, input, select, textarea")
+      target.closest("button, input, select, textarea, [contenteditable='true']")
     ) {
       return;
     }
@@ -1523,6 +1641,12 @@ function TemplateDesigner({
   }
 
   function handleBlockKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement;
+
+    if (target.closest("input, select, textarea, [contenteditable='true']")) {
+      return;
+    }
+
     const step = event.shiftKey ? GRID_SIZE : 1;
 
     if (event.key === "ArrowLeft") {
@@ -1537,7 +1661,7 @@ function TemplateDesigner({
     } else if (event.key === "ArrowDown") {
       event.preventDefault();
       nudgeSelectedBlock(0, step);
-    } else if (event.key === "Delete" || event.key === "Backspace") {
+    } else if (event.key === "Delete") {
       event.preventDefault();
       removeSelectedBlock();
     }
@@ -1552,8 +1676,9 @@ function TemplateDesigner({
     const activeEditor = activeRichEditorRef.current;
 
     if (activeEditor?.dataset.blockId === selectedBlock.id) {
-      activeEditor.focus();
+      restoreRichSelection(activeEditor);
       document.execCommand("insertText", false, token);
+      rememberRichSelection(activeEditor);
       syncRichTextElement(activeEditor, selectedBlock);
       return;
     }
@@ -1583,7 +1708,7 @@ function TemplateDesigner({
         }
 
         if (editor.innerHTML !== html) {
-          editor.innerHTML = html;
+          setEditorHtml(editor, html);
         }
       });
   }
@@ -1593,7 +1718,7 @@ function TemplateDesigner({
     const text = htmlToPlainText(html);
 
     if (html !== element.innerHTML) {
-      element.innerHTML = html;
+      setEditorHtml(element, html);
     }
 
     syncRichTextEditors(block.id, html, element);
@@ -1604,6 +1729,8 @@ function TemplateDesigner({
     event: KeyboardEvent<HTMLDivElement>,
     block: TemplateBlock,
   ) {
+    event.stopPropagation();
+
     if (event.key === "Escape") {
       setEditingTextBlockId(null);
       return;
@@ -1630,38 +1757,30 @@ function TemplateDesigner({
   }
 
   function rememberRichSelection(editor: HTMLDivElement) {
-    const selection = window.getSelection();
+    const offsets = editorSelectionOffsets(editor);
 
-    if (!selection?.rangeCount || !editor.contains(selection.anchorNode)) {
+    if (!offsets) {
       return;
     }
 
     activeRichEditorRef.current = editor;
-    richSelectionRef.current = selection.getRangeAt(0).cloneRange();
+    richSelectionRef.current = {
+      blockId: editor.dataset.blockId || "",
+      ...offsets,
+    };
   }
 
   function restoreRichSelection(editor: HTMLDivElement) {
-    const selection = window.getSelection();
-    const range = richSelectionRef.current;
+    const savedSelection = richSelectionRef.current;
 
-    if (!selection) {
-      editor.focus();
-      return;
-    }
-
-    if (!range || !editor.contains(range.commonAncestorContainer)) {
-      const fallbackRange = document.createRange();
-
-      fallbackRange.selectNodeContents(editor);
-      selection.removeAllRanges();
-      selection.addRange(fallbackRange);
-      editor.focus();
-      return;
-    }
-
-    selection.removeAllRanges();
-    selection.addRange(range);
     editor.focus();
+
+    if (!savedSelection || savedSelection.blockId !== editor.dataset.blockId) {
+      selectEditorContents(editor);
+      return;
+    }
+
+    restoreEditorSelection(editor, savedSelection);
   }
 
   function applyRichTextCommand(command: string) {
@@ -1717,28 +1836,33 @@ function TemplateDesigner({
       return;
     }
 
-    if (range.collapsed && fallback) {
-      document.execCommand("insertText", false, fallback);
-      rememberRichSelection(editor);
-      syncRichTextElement(editor, block);
-      return;
-    }
-
     if (range.collapsed) {
-      return;
+      if (fallback) {
+        document.execCommand("insertText", false, fallback);
+        rememberRichSelection(editor);
+        syncRichTextElement(editor, block);
+        return;
+      }
+
+      selectEditorContents(editor);
+
+      if (!selection.rangeCount) {
+        return;
+      }
     }
 
+    const selectedRange = selection.getRangeAt(0);
     const span = document.createElement("span");
 
     Object.assign(span.style, style);
 
     try {
-      range.surroundContents(span);
+      selectedRange.surroundContents(span);
     } catch {
-      const contents = range.extractContents();
+      const contents = selectedRange.extractContents();
 
       span.appendChild(contents);
-      range.insertNode(span);
+      selectedRange.insertNode(span);
     }
 
     selection.removeAllRanges();
@@ -2123,15 +2247,6 @@ function TemplateDesigner({
                           block={block}
                           className="template-inline-textarea"
                           editorRef={(element) => {
-                            if (
-                              !element &&
-                              inlineTextRef.current &&
-                              activeRichEditorRef.current ===
-                                inlineTextRef.current
-                            ) {
-                              activeRichEditorRef.current = null;
-                            }
-
                             inlineTextRef.current = element;
                           }}
                           onBlur={(element) => {
@@ -2392,14 +2507,6 @@ function TemplateDesigner({
                     block={selectedBlock}
                     className="template-rich-textbox"
                     editorRef={(element) => {
-                      if (
-                        !element &&
-                        inspectorTextRef.current &&
-                        activeRichEditorRef.current === inspectorTextRef.current
-                      ) {
-                        activeRichEditorRef.current = null;
-                      }
-
                       inspectorTextRef.current = element;
                     }}
                     onFocus={(element) => {
@@ -2908,6 +3015,7 @@ export default function OrderPrinterDashboard() {
   const defaultPrinterName =
     data.rule?.printerName || data.printers[0]?.name || "";
   const canSave = Boolean(defaultLocationId && defaultPrinterName);
+  const [activeAppTab, setActiveAppTab] = useState<AppTab>("template");
   const [activeOperationsTab, setActiveOperationsTab] =
     useState<OperationsTab>("rule");
   const agentConfig = JSON.stringify(
@@ -2936,7 +3044,27 @@ export default function OrderPrinterDashboard() {
       </header>
 
       <div className="app-body">
-        <aside className="app-sidebar">
+        <nav className="main-tabs" aria-label="Order printer sections">
+          {(
+            [
+              ["template", "Template editor"],
+              ["operations", "Operations"],
+            ] as const
+          ).map(([tab, label]) => (
+            <button
+              aria-pressed={activeAppTab === tab}
+              className={activeAppTab === tab ? "active" : ""}
+              key={tab}
+              type="button"
+              onClick={() => setActiveAppTab(tab)}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+
+        {activeAppTab === "operations" ? (
+          <aside className="app-sidebar">
           <div className="operations-tabs">
             {(
               [
@@ -3158,9 +3286,11 @@ export default function OrderPrinterDashboard() {
             )}
           </section>
           ) : null}
-        </aside>
+          </aside>
+        ) : null}
 
-        <section className="template-app-panel">
+        {activeAppTab === "template" ? (
+          <section className="template-app-panel">
           <TemplateDesigner
             canSaveTemplate={Boolean(data.rule)}
             template={data.template}
@@ -3168,6 +3298,7 @@ export default function OrderPrinterDashboard() {
             saving={saving}
           />
         </section>
+        ) : null}
       </div>
     </main>
   );
