@@ -185,6 +185,12 @@ export type TemplateBlock = {
   fontSize?: number;
   fontWeight?: string;
   align?: "left" | "center" | "right";
+  color?: string;
+  background?: string;
+  border?: boolean;
+  padding?: number;
+  showImages?: boolean;
+  showSku?: boolean;
 };
 
 export type TemplateDesign = {
@@ -569,6 +575,20 @@ function normalizedAlign(value: unknown): "left" | "center" | "right" {
   return value === "center" || value === "right" ? value : "left";
 }
 
+function normalizedColor(value: unknown, fallback = "") {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const color = value.trim();
+
+  if (color === "transparent" || /^#[0-9a-fA-F]{6}$/.test(color)) {
+    return color;
+  }
+
+  return fallback;
+}
+
 function normalizedTemplateBlock(value: unknown): TemplateBlock | null {
   if (!isRecord(value)) {
     return null;
@@ -608,6 +628,12 @@ function normalizedTemplateBlock(value: unknown): TemplateBlock | null {
     fontSize: boundedNumber(value.fontSize, 12, 8, 72),
     fontWeight: value.fontWeight === "700" ? "700" : "400",
     align: normalizedAlign(value.align),
+    color: normalizedColor(value.color, "#111827"),
+    background: normalizedColor(value.background, "transparent"),
+    border: value.border === true,
+    padding: boundedNumber(value.padding, 0, 0, 48),
+    showImages: value.showImages !== false,
+    showSku: value.showSku !== false,
   };
 }
 
@@ -1283,11 +1309,17 @@ function blockStyle(block: TemplateBlock) {
     `font-size:${block.fontSize || 12}px`,
     `font-weight:${block.fontWeight === "700" ? "700" : "400"}`,
     `text-align:${block.align || "left"}`,
+    `color:${normalizedColor(block.color, "#111827")}`,
+    `background:${normalizedColor(block.background, "transparent")}`,
+    `border:${block.border ? "1px solid #d1d5db" : "0"}`,
+    `padding:${boundedNumber(block.padding, 0, 0, 48)}px`,
   ].join(";");
 }
 
 function renderItemsBlock(block: TemplateBlock, lines: PackingSlipLine[]) {
-  const hasImages = lines.some((line) => line.imageUrl);
+  const hasImages =
+    block.showImages !== false && lines.some((line) => line.imageUrl);
+  const showSku = block.showSku !== false;
   const rows = lines
     .map(
       (line) => `
@@ -1305,7 +1337,7 @@ function renderItemsBlock(block: TemplateBlock, lines: PackingSlipLine[]) {
           <td>
             <strong>${escapeHtml(lineTitle(line))}</strong>
             ${
-              line.sku
+              showSku && line.sku
                 ? `<span class="meta">SKU: ${escapeHtml(line.sku)}</span>`
                 : ""
             }
@@ -1331,6 +1363,16 @@ function renderItemsBlock(block: TemplateBlock, lines: PackingSlipLine[]) {
   `;
 }
 
+function safeImageUrl(value: string | undefined) {
+  const url = String(value || "").trim();
+
+  if (/^https?:\/\//i.test(url) || /^data:image\//i.test(url)) {
+    return url;
+  }
+
+  return "";
+}
+
 function renderTemplateBlock(
   block: TemplateBlock,
   context: {
@@ -1345,7 +1387,7 @@ function renderTemplateBlock(
 
   if (block.type === "image") {
     const dataImage = templateFieldValue({ ...context, field: block.field });
-    const imageUrl = dataImage || block.imageUrl || "";
+    const imageUrl = safeImageUrl(dataImage) || safeImageUrl(block.imageUrl);
 
     return `
       <div class="template-block image-block" style="${blockStyle(block)}">
