@@ -287,7 +287,23 @@ const TEMPLATE_PAGE: TemplatePage = {
   marginLeft: 36,
 };
 const TEMPLATE_STORAGE_PREFIX = "packing-template:";
+const GOOGLE_FONT_STYLESHEET =
+  "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Roboto:wght@400;500;700&family=Open+Sans:wght@400;600;700&family=Lato:wght@400;700&family=Montserrat:wght@400;600;700&family=Poppins:wght@400;600;700&family=Nunito+Sans:wght@400;600;700&family=Source+Sans+3:wght@400;600;700&family=Work+Sans:wght@400;600;700&family=Noto+Sans:wght@400;600;700&family=Merriweather:wght@400;700&family=Playfair+Display:wght@400;700&family=Roboto+Slab:wght@400;700&family=Oswald:wght@400;600;700&display=swap";
 const TEMPLATE_FONT_FAMILIES = new Set([
+  "Inter, Arial, sans-serif",
+  "Roboto, Arial, sans-serif",
+  "'Open Sans', Arial, sans-serif",
+  "Lato, Arial, sans-serif",
+  "Montserrat, Arial, sans-serif",
+  "Poppins, Arial, sans-serif",
+  "'Nunito Sans', Arial, sans-serif",
+  "'Source Sans 3', Arial, sans-serif",
+  "'Work Sans', Arial, sans-serif",
+  "'Noto Sans', Arial, sans-serif",
+  "Merriweather, Georgia, serif",
+  "'Playfair Display', Georgia, serif",
+  "'Roboto Slab', Georgia, serif",
+  "Oswald, Arial, sans-serif",
   "Arial, Helvetica, sans-serif",
   "Helvetica, Arial, sans-serif",
   "Georgia, serif",
@@ -682,6 +698,16 @@ function escapeHtml(value: unknown) {
     .replaceAll("'", "&#39;");
 }
 
+function decodeHtmlText(value: string) {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+}
+
 function normalizePrinterName(value: unknown) {
   if (typeof value !== "string") {
     return "";
@@ -730,7 +756,7 @@ function normalizedColor(value: unknown, fallback = "") {
 function normalizedFontFamily(value: unknown) {
   return typeof value === "string" && TEMPLATE_FONT_FAMILIES.has(value)
     ? value
-    : "Arial, Helvetica, sans-serif";
+    : "Inter, Arial, sans-serif";
 }
 
 function normalizedLineHeight(value: unknown) {
@@ -1007,12 +1033,10 @@ function templateStoreFromRule(
     const parsed = JSON.parse(raw.slice(TEMPLATE_STORAGE_PREFIX.length));
     const templates =
       isRecord(parsed) && Array.isArray(parsed.templates)
-        ? parsed.templates
-            .filter(isRecord)
-            .map((template) => ({
-              name: normalizedTemplateName(template.name),
-              design: normalizeTemplateDesign(template.design),
-            }))
+        ? parsed.templates.filter(isRecord).map((template) => ({
+            name: normalizedTemplateName(template.name),
+            design: normalizeTemplateDesign(template.design),
+          }))
         : [];
 
     if (templates.length) {
@@ -1059,7 +1083,9 @@ function templateStoreFromRule(
 }
 
 function normalizedTemplateName(value: unknown) {
-  const name = String(value || "Default packing slip").trim().slice(0, 120);
+  const name = String(value || "Default packing slip")
+    .trim()
+    .slice(0, 120);
 
   return name || "Default packing slip";
 }
@@ -1127,7 +1153,9 @@ export async function deletePrintTemplate(shop: string, formData: FormData) {
     throw new Error("That template no longer exists.");
   }
 
-  const templates = store.templates.filter((template) => template.name !== name);
+  const templates = store.templates.filter(
+    (template) => template.name !== name,
+  );
   const activeName =
     store.activeName === name
       ? templates[0].name
@@ -1762,7 +1790,7 @@ function sanitizeTemplateHtml(html: string) {
     .slice(0, 12000)
     .replace(/<[^>]*>|[^<]+/g, (chunk) => {
       if (!chunk.startsWith("<")) {
-        return escapeHtml(chunk.replaceAll("&nbsp;", " "));
+        return escapeHtml(decodeHtmlText(chunk));
       }
 
       const closing = chunk.match(/^<\/\s*([a-z0-9]+)\s*>$/i);
@@ -2003,12 +2031,15 @@ function renderPackingSlipHtml({
   <head>
     <meta charset="utf-8">
     <title>Packing slip ${escapeHtml(order.name)}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="${escapeHtml(GOOGLE_FONT_STYLESHEET)}">
     <style>
       @page { size: ${page.width}px ${page.height}px; margin: 0; }
       * { box-sizing: border-box; }
       body {
         color: #111827;
-        font-family: Arial, Helvetica, sans-serif;
+        font-family: Inter, Arial, Helvetica, sans-serif;
         font-size: 12px;
         margin: 0;
       }

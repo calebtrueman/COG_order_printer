@@ -61,6 +61,20 @@ const PAGE_SIZE_OPTIONS = [
   { value: "custom", label: "Custom", width: 816, height: 1056 },
 ];
 const FONT_FAMILIES = [
+  { label: "Inter", value: "Inter, Arial, sans-serif" },
+  { label: "Roboto", value: "Roboto, Arial, sans-serif" },
+  { label: "Open Sans", value: "'Open Sans', Arial, sans-serif" },
+  { label: "Lato", value: "Lato, Arial, sans-serif" },
+  { label: "Montserrat", value: "Montserrat, Arial, sans-serif" },
+  { label: "Poppins", value: "Poppins, Arial, sans-serif" },
+  { label: "Nunito Sans", value: "'Nunito Sans', Arial, sans-serif" },
+  { label: "Source Sans 3", value: "'Source Sans 3', Arial, sans-serif" },
+  { label: "Work Sans", value: "'Work Sans', Arial, sans-serif" },
+  { label: "Noto Sans", value: "'Noto Sans', Arial, sans-serif" },
+  { label: "Merriweather", value: "Merriweather, Georgia, serif" },
+  { label: "Playfair Display", value: "'Playfair Display', Georgia, serif" },
+  { label: "Roboto Slab", value: "'Roboto Slab', Georgia, serif" },
+  { label: "Oswald", value: "Oswald, Arial, sans-serif" },
   { label: "Arial", value: "Arial, Helvetica, sans-serif" },
   { label: "Helvetica", value: "Helvetica, Arial, sans-serif" },
   { label: "Georgia", value: "Georgia, serif" },
@@ -154,6 +168,12 @@ type RichTextSelection = {
   blockId: string;
   start: number;
   end: number;
+};
+type MentionMenuState = {
+  blockId: string;
+  query: string;
+  left: number;
+  top: number;
 };
 
 const TEMPLATE_FIELD_GROUPS: { label: string; fields: TemplateField[] }[] = [
@@ -437,21 +457,27 @@ function escapeHtml(value: string) {
     .replaceAll("'", "&#39;");
 }
 
+function decodeHtmlText(value: string) {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+}
+
 function plainTextToHtml(value: string | undefined) {
   return escapeHtml(String(value || "")).replace(/\r?\n/g, "<br>");
 }
 
 function htmlToPlainText(value: string | undefined) {
-  return String(value || "")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(div|p)>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+  return decodeHtmlText(
+    String(value || "")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(div|p)>/gi, "\n")
+      .replace(/<[^>]+>/g, ""),
+  )
     .replace(/\n{3,}/g, "\n\n")
     .trimEnd();
 }
@@ -543,7 +569,7 @@ function sanitizeTemplateHtml(html: string) {
     .slice(0, 12000)
     .replace(/<[^>]*>|[^<]+/g, (chunk) => {
       if (!chunk.startsWith("<")) {
-        return escapeHtml(chunk.replaceAll("&nbsp;", " "));
+        return escapeHtml(decodeHtmlText(chunk));
       }
 
       const closing = chunk.match(/^<\/\s*([a-z0-9]+)\s*>$/i);
@@ -613,12 +639,122 @@ function sampleTextHtml(block: TemplateBlock) {
 function snapMentions(value: string) {
   return TEMPLATE_FIELDS.reduce((current, field) => {
     const pattern = new RegExp(
-      `@${escapeRegExp(field.label)}(?=$|\\s|[.,;:)])`,
+      `@@${escapeRegExp(field.label)}(?=$|\\s|[.,;:)])`,
       "gi",
     );
 
     return current.replace(pattern, tokenForField(field.value));
   }, value);
+}
+
+function editorTokenHtml(field: TemplateField) {
+  const token = tokenForField(field.value);
+
+  return `<span class="editor-variable-token" data-template-token="${escapeHtml(
+    token,
+  )}" contenteditable="false">${escapeHtml(field.label)}</span>`;
+}
+
+function templateHtmlToEditorHtml(value: string) {
+  return sanitizeTemplateHtml(value).replace(
+    /\{\{\s*([\w.]+)\s*\}\}/g,
+    (token, fieldValue) => {
+      const field = fieldFor(fieldValue);
+
+      if (!field) {
+        return escapeHtml(token);
+      }
+
+      return editorTokenHtml(field);
+    },
+  );
+}
+
+function editorElementToTemplateHtml(editor: HTMLDivElement) {
+  const clone = editor.cloneNode(true) as HTMLDivElement;
+
+  clone
+    .querySelectorAll<HTMLElement>("[data-template-token]")
+    .forEach((token) => {
+      token.replaceWith(
+        document.createTextNode(token.dataset.templateToken || ""),
+      );
+    });
+
+  return sanitizeTemplateHtml(snapMentions(clone.innerHTML));
+}
+
+function mentionMatches(query: string, limit = 8) {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  return TEMPLATE_FIELDS.map((field) => {
+    const label = field.label.toLowerCase();
+    const value = field.value.toLowerCase();
+    const sample = field.sample.toLowerCase();
+    let rank = 999;
+
+    if (!normalizedQuery) {
+      rank = 10;
+    } else if (label === normalizedQuery || value === normalizedQuery) {
+      rank = 0;
+    } else if (label.startsWith(normalizedQuery)) {
+      rank = 1;
+    } else if (value.startsWith(normalizedQuery)) {
+      rank = 2;
+    } else if (label.includes(normalizedQuery)) {
+      rank = 3;
+    } else if (
+      value.includes(normalizedQuery) ||
+      sample.includes(normalizedQuery)
+    ) {
+      rank = 4;
+    }
+
+    return { field, rank };
+  })
+    .filter((match) => match.rank < 999)
+    .sort(
+      (a, b) => a.rank - b.rank || a.field.label.localeCompare(b.field.label),
+    )
+    .slice(0, limit)
+    .map((match) => match.field);
+}
+
+function exactMentionField(query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  if (!normalizedQuery) {
+    return null;
+  }
+
+  return (
+    TEMPLATE_FIELDS.find(
+      (field) =>
+        field.label.toLowerCase() === normalizedQuery ||
+        field.value.toLowerCase() === normalizedQuery,
+    ) || null
+  );
+}
+
+function currentMentionRange(editor: HTMLDivElement) {
+  const offsets = editorSelectionOffsets(editor);
+
+  if (!offsets || offsets.start !== offsets.end) {
+    return null;
+  }
+
+  const beforeCaret = (editor.textContent || "").slice(0, offsets.start);
+  const match = beforeCaret.match(/(^|[\s])@@([^\n@]{0,80})$/);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    start: offsets.start - match[0].length + match[1].length,
+    end: offsets.start,
+    query: match[2],
+  };
 }
 
 function replaceSampleTokens(text: string | undefined) {
@@ -881,10 +1017,10 @@ function createTemplateBlock(
       w: type === "items" ? 680 : type === "image" ? 150 : 240,
       h: type === "items" ? 330 : type === "image" ? 130 : 64,
       field: type === "field" || type === "image" ? field : "",
-      text: type === "text" ? "Custom text with @Order # or any variable" : "",
+      text: type === "text" ? "Custom text with @@Order # or any variable" : "",
       textHtml:
         type === "text"
-          ? plainTextToHtml("Custom text with @Order # or any variable")
+          ? plainTextToHtml("Custom text with @@Order # or any variable")
           : "",
       imageUrl: "",
       label: type === "field" ? selectedField?.label || "Order field" : "",
@@ -1173,6 +1309,20 @@ function selectEditorContents(editor: HTMLDivElement) {
   return range;
 }
 
+function collapseEditorSelectionToEnd(editor: HTMLDivElement) {
+  const selection = window.getSelection();
+
+  if (!selection) {
+    return;
+  }
+
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 function RichTextBox({
   block,
   className,
@@ -1198,7 +1348,7 @@ function RichTextBox({
   style?: CSSProperties;
 }) {
   const localRef = useRef<HTMLDivElement | null>(null);
-  const currentHtml = textBlockHtml(block);
+  const currentHtml = templateHtmlToEditorHtml(textBlockHtml(block));
 
   useEffect(() => {
     const element = localRef.current;
@@ -1274,12 +1424,18 @@ function TemplateDesigner({
   const [editingItemsBlockId, setEditingItemsBlockId] = useState<string | null>(
     null,
   );
+  const [mentionMenu, setMentionMenu] = useState<MentionMenuState | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const inlineTextRef = useRef<HTMLDivElement | null>(null);
   const inspectorTextRef = useRef<HTMLDivElement | null>(null);
   const activeRichEditorRef = useRef<HTMLDivElement | null>(null);
   const richSelectionRef = useRef<RichTextSelection | null>(null);
   const operationRef = useRef<CanvasOperation | null>(null);
+  const blockClipboardRef = useRef<TemplateBlock | null>(null);
+  const designHistoryRef = useRef<string[]>([]);
+  const designFutureRef = useRef<string[]>([]);
+  const applyingHistoryRef = useRef(false);
+  const lastDesignJsonRef = useRef(JSON.stringify(copyDesign(template.design)));
   const selectedBlock = useMemo(
     () => design.blocks.find((block) => block.id === selectedId) || null,
     [design.blocks, selectedId],
@@ -1297,7 +1453,9 @@ function TemplateDesigner({
     [selectedBlock],
   );
   const selectedItemColumn =
-    selectedItemColumns.find((column) => column.key === selectedItemColumnKey) ||
+    selectedItemColumns.find(
+      (column) => column.key === selectedItemColumnKey,
+    ) ||
     selectedItemColumns.find((column) => column.enabled) ||
     selectedItemColumns[0] ||
     null;
@@ -1307,13 +1465,40 @@ function TemplateDesigner({
 
   useEffect(() => {
     const nextDesign = copyDesign(template.design);
+    const nextDesignJson = JSON.stringify(nextDesign);
 
+    lastDesignJsonRef.current = nextDesignJson;
+    designHistoryRef.current = [];
+    designFutureRef.current = [];
+    applyingHistoryRef.current = false;
     setName(template.name);
     setDesign(nextDesign);
     setEditingTextBlockId(null);
     setEditingItemsBlockId(null);
+    setMentionMenu(null);
     setSelectedId(nextDesign.blocks[0]?.id || "");
   }, [template.design, template.name]);
+
+  useEffect(() => {
+    const nextDesignJson = JSON.stringify(design);
+
+    if (nextDesignJson === lastDesignJsonRef.current) {
+      return;
+    }
+
+    if (applyingHistoryRef.current) {
+      applyingHistoryRef.current = false;
+      lastDesignJsonRef.current = nextDesignJson;
+      return;
+    }
+
+    designHistoryRef.current = [
+      ...designHistoryRef.current.slice(-79),
+      lastDesignJsonRef.current,
+    ];
+    designFutureRef.current = [];
+    lastDesignJsonRef.current = nextDesignJson;
+  }, [design]);
 
   useEffect(() => {
     if (!editingTextBlockId) {
@@ -1336,7 +1521,9 @@ function TemplateDesigner({
     if (
       selectedBlock?.type === "items" &&
       selectedItemColumns.length &&
-      !selectedItemColumns.some((column) => column.key === selectedItemColumnKey)
+      !selectedItemColumns.some(
+        (column) => column.key === selectedItemColumnKey,
+      )
     ) {
       setSelectedItemColumnKey(selectedItemColumns[0].key);
     }
@@ -1461,15 +1648,22 @@ function TemplateDesigner({
   function revertTemplate() {
     const nextDesign = copyDesign(template.design);
 
+    lastDesignJsonRef.current = JSON.stringify(nextDesign);
+    designHistoryRef.current = [];
+    designFutureRef.current = [];
+    applyingHistoryRef.current = false;
     setName(template.name);
     setDesign(nextDesign);
     setEditingTextBlockId(null);
     setEditingItemsBlockId(null);
+    setMentionMenu(null);
     setSelectedId(nextDesign.blocks[0]?.id || "");
   }
 
   function selectTemplate(templateName: string) {
-    const selectedTemplate = templates.find((item) => item.name === templateName);
+    const selectedTemplate = templates.find(
+      (item) => item.name === templateName,
+    );
 
     if (!selectedTemplate) {
       return;
@@ -1477,10 +1671,15 @@ function TemplateDesigner({
 
     const nextDesign = copyDesign(selectedTemplate.design);
 
+    lastDesignJsonRef.current = JSON.stringify(nextDesign);
+    designHistoryRef.current = [];
+    designFutureRef.current = [];
+    applyingHistoryRef.current = false;
     setName(selectedTemplate.name);
     setDesign(nextDesign);
     setEditingTextBlockId(null);
     setEditingItemsBlockId(null);
+    setMentionMenu(null);
     setSelectedId(nextDesign.blocks[0]?.id || "");
   }
 
@@ -1505,15 +1704,19 @@ function TemplateDesigner({
     block: TemplateBlock,
   ) {
     const target = event.target as HTMLElement;
+    const dragHandle = target.closest("[data-drag-handle]");
 
     if (
-      target.dataset.resizeHandle ||
-      target.closest("button, input, select, textarea, [contenteditable='true']")
+      !dragHandle &&
+      (target.dataset.resizeHandle ||
+        target.closest(
+          "button, input, select, textarea, [contenteditable='true']",
+        ))
     ) {
       return;
     }
 
-    if (block.type === "text" && event.detail > 1) {
+    if (!dragHandle && block.type === "text" && event.detail > 1) {
       setSelectedId(block.id);
       setEditingTextBlockId(block.id);
       setEditingItemsBlockId(null);
@@ -1521,7 +1724,7 @@ function TemplateDesigner({
       return;
     }
 
-    if (block.type === "items" && event.detail > 1) {
+    if (!dragHandle && block.type === "items" && event.detail > 1) {
       setSelectedId(block.id);
       setEditingItemsBlockId(block.id);
       setEditingTextBlockId(null);
@@ -1539,8 +1742,10 @@ function TemplateDesigner({
       original: block,
     };
     setSelectedId(block.id);
-    setEditingTextBlockId(null);
-    setEditingItemsBlockId(null);
+    if (!dragHandle) {
+      setEditingTextBlockId(null);
+      setEditingItemsBlockId(null);
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
   }
@@ -1672,18 +1877,24 @@ function TemplateDesigner({
       return;
     }
 
-    const token = tokenForField(tokenField);
-    const activeEditor = activeRichEditorRef.current;
+    const field = fieldFor(tokenField);
 
-    if (activeEditor?.dataset.blockId === selectedBlock.id) {
-      restoreRichSelection(activeEditor);
-      document.execCommand("insertText", false, token);
-      rememberRichSelection(activeEditor);
-      syncRichTextElement(activeEditor, selectedBlock);
+    if (!field) {
       return;
     }
 
-    const nextHtml = `${textBlockHtml(selectedBlock)} ${escapeHtml(token)}`.trim();
+    const activeEditor = activeRichEditorRef.current;
+
+    if (activeEditor?.dataset.blockId === selectedBlock.id) {
+      insertVariableField(activeEditor, selectedBlock, field, {
+        replaceMention: false,
+      });
+      return;
+    }
+
+    const token = tokenForField(field.value);
+    const nextHtml =
+      `${textBlockHtml(selectedBlock)} ${escapeHtml(token)}`.trim();
 
     syncRichTextEditors(selectedBlock.id, nextHtml);
     updateBlock(selectedBlock.id, {
@@ -1692,11 +1903,83 @@ function TemplateDesigner({
     });
   }
 
+  function variableTokenElement(field: TemplateField) {
+    const token = document.createElement("span");
+
+    token.className = "editor-variable-token";
+    token.dataset.templateToken = tokenForField(field.value);
+    token.contentEditable = "false";
+    token.textContent = field.label;
+
+    return token;
+  }
+
+  function restoreRichInsertionPoint(editor: HTMLDivElement) {
+    const savedSelection = richSelectionRef.current;
+
+    editor.focus();
+
+    if (savedSelection && savedSelection.blockId === editor.dataset.blockId) {
+      restoreEditorSelection(editor, savedSelection);
+      return;
+    }
+
+    collapseEditorSelectionToEnd(editor);
+  }
+
+  function insertVariableField(
+    editor: HTMLDivElement,
+    block: TemplateBlock,
+    field: TemplateField,
+    options: { replaceMention: boolean },
+  ) {
+    restoreRichInsertionPoint(editor);
+
+    if (options.replaceMention) {
+      const mentionRange = currentMentionRange(editor);
+
+      if (mentionRange) {
+        restoreEditorSelection(editor, {
+          start: mentionRange.start,
+          end: mentionRange.end,
+        });
+      }
+    }
+
+    const selection = window.getSelection();
+
+    if (!selection?.rangeCount) {
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+
+    if (!editor.contains(range.commonAncestorContainer)) {
+      return;
+    }
+
+    const token = variableTokenElement(field);
+    const spacer = document.createTextNode(" ");
+
+    range.deleteContents();
+    range.insertNode(spacer);
+    range.insertNode(token);
+    range.setStart(spacer, spacer.textContent?.length || 0);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    rememberRichSelection(editor);
+    syncRichTextElement(editor, block);
+    setMentionMenu(null);
+  }
+
   function syncRichTextEditors(
     blockId: string,
     html: string,
     source?: HTMLDivElement,
   ) {
+    const editorHtml = templateHtmlToEditorHtml(html);
+
     document
       .querySelectorAll<HTMLDivElement>("[data-template-rich-editor]")
       .forEach((editor) => {
@@ -1707,19 +1990,15 @@ function TemplateDesigner({
           return;
         }
 
-        if (editor.innerHTML !== html) {
-          setEditorHtml(editor, html);
+        if (editor.innerHTML !== editorHtml) {
+          setEditorHtml(editor, editorHtml);
         }
       });
   }
 
   function syncRichTextElement(element: HTMLDivElement, block: TemplateBlock) {
-    const html = sanitizeTemplateHtml(snapMentions(element.innerHTML));
+    const html = editorElementToTemplateHtml(element);
     const text = htmlToPlainText(html);
-
-    if (html !== element.innerHTML) {
-      setEditorHtml(element, html);
-    }
 
     syncRichTextEditors(block.id, html, element);
     updateBlock(block.id, { text, textHtml: html });
@@ -1731,9 +2010,33 @@ function TemplateDesigner({
   ) {
     event.stopPropagation();
 
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+      return;
+    }
+
     if (event.key === "Escape") {
+      if (mentionMenu?.blockId === block.id) {
+        event.preventDefault();
+        setMentionMenu(null);
+        return;
+      }
+
       setEditingTextBlockId(null);
       return;
+    }
+
+    if (mentionMenu?.blockId === block.id) {
+      if (event.key === "Enter" || event.key === "Tab") {
+        const field = mentionMatches(mentionMenu.query)[0];
+
+        if (field) {
+          event.preventDefault();
+          insertVariableField(event.currentTarget, block, field, {
+            replaceMention: true,
+          });
+          return;
+        }
+      }
     }
 
     if (event.key !== "Tab") {
@@ -1754,6 +2057,39 @@ function TemplateDesigner({
     activeRichEditorRef.current = event.currentTarget;
     rememberRichSelection(event.currentTarget);
     syncRichTextElement(event.currentTarget, block);
+    window.requestAnimationFrame(() => {
+      updateMentionMenu(event.currentTarget, block);
+    });
+  }
+
+  function updateMentionMenu(editor: HTMLDivElement, block: TemplateBlock) {
+    const mentionRange = currentMentionRange(editor);
+
+    if (!mentionRange) {
+      setMentionMenu((current) =>
+        current?.blockId === block.id ? null : current,
+      );
+      return;
+    }
+
+    const exactMatch = exactMentionField(mentionRange.query);
+
+    if (exactMatch) {
+      insertVariableField(editor, block, exactMatch, { replaceMention: true });
+      return;
+    }
+
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    const rect = range?.getBoundingClientRect();
+    const fallbackRect = editor.getBoundingClientRect();
+
+    setMentionMenu({
+      blockId: block.id,
+      query: mentionRange.query,
+      left: rect?.left || fallbackRect.left,
+      top: (rect?.bottom || fallbackRect.bottom) + 6,
+    });
   }
 
   function rememberRichSelection(editor: HTMLDivElement) {
@@ -1784,17 +2120,13 @@ function TemplateDesigner({
   }
 
   function applyRichTextCommand(command: string) {
-    const block = selectedBlock;
-    const editor = activeRichEditorRef.current || inspectorTextRef.current;
-
-    if (!block || block.type !== "text" || !editor) {
-      return;
+    if (command === "bold") {
+      wrapRichSelection({ fontWeight: "700" });
+    } else if (command === "italic") {
+      wrapRichSelection({ fontStyle: "italic" });
+    } else if (command === "underline") {
+      wrapRichSelection({ textDecoration: "underline" });
     }
-
-    restoreRichSelection(editor);
-    document.execCommand(command, false);
-    rememberRichSelection(editor);
-    syncRichTextElement(editor, block);
   }
 
   function applyRichTextFontFamily(fontFamily: string) {
@@ -1815,7 +2147,10 @@ function TemplateDesigner({
     wrapRichSelection({ fontSize: `${size}px` });
   }
 
-  function wrapRichSelection(style: Partial<CSSStyleDeclaration>, fallback = "") {
+  function wrapRichSelection(
+    style: Partial<CSSStyleDeclaration>,
+    fallback = "",
+  ) {
     const block = selectedBlock;
     const editor = activeRichEditorRef.current || inspectorTextRef.current;
 
@@ -1950,1058 +2285,1282 @@ function TemplateDesigner({
     moveItemColumnInBlock(selectedBlock, key, direction);
   }
 
+  function applyDesignHistory(json: string) {
+    const nextDesign = copyDesign(JSON.parse(json) as TemplateDesign);
+
+    applyingHistoryRef.current = true;
+    setDesign(nextDesign);
+    setEditingTextBlockId(null);
+    setEditingItemsBlockId(null);
+    setMentionMenu(null);
+    setSelectedId((current) =>
+      nextDesign.blocks.some((block) => block.id === current)
+        ? current
+        : nextDesign.blocks[0]?.id || "",
+    );
+  }
+
+  function undoDesignChange() {
+    const previous = designHistoryRef.current.pop();
+
+    if (!previous) {
+      return;
+    }
+
+    designFutureRef.current = [
+      lastDesignJsonRef.current,
+      ...designFutureRef.current.slice(0, 79),
+    ];
+    applyDesignHistory(previous);
+  }
+
+  function redoDesignChange() {
+    const next = designFutureRef.current.shift();
+
+    if (!next) {
+      return;
+    }
+
+    designHistoryRef.current = [
+      ...designHistoryRef.current.slice(-79),
+      lastDesignJsonRef.current,
+    ];
+    applyDesignHistory(next);
+  }
+
+  function copySelectedBlock() {
+    if (!selectedBlock) {
+      return;
+    }
+
+    blockClipboardRef.current = JSON.parse(
+      JSON.stringify(selectedBlock),
+    ) as TemplateBlock;
+  }
+
+  function pasteBlockFromClipboard() {
+    const block = blockClipboardRef.current;
+
+    if (!block) {
+      return;
+    }
+
+    const duplicate = normalizeBlockGeometry(
+      {
+        ...JSON.parse(JSON.stringify(block)),
+        id: `${block.type}-${Date.now()}`,
+        x: block.x + 16,
+        y: block.y + 16,
+      },
+      design.page,
+    );
+
+    setDesign((current) => ({
+      ...current,
+      blocks: [...current.blocks, duplicate],
+    }));
+    setEditingTextBlockId(null);
+    setEditingItemsBlockId(null);
+    setSelectedId(duplicate.id);
+  }
+
+  function targetAcceptsTextInput(target: EventTarget | null) {
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+
+    return Boolean(
+      target.closest("input, select, textarea, [contenteditable='true']"),
+    );
+  }
+
+  function handleTemplateEditorKeyDown(event: KeyboardEvent<HTMLFormElement>) {
+    if (targetAcceptsTextInput(event.target)) {
+      return;
+    }
+
+    const isModifier = event.metaKey || event.ctrlKey;
+    const key = event.key.toLowerCase();
+
+    if (isModifier && key === "z") {
+      event.preventDefault();
+      if (event.shiftKey) {
+        redoDesignChange();
+      } else {
+        undoDesignChange();
+      }
+      return;
+    }
+
+    if (isModifier && key === "y") {
+      event.preventDefault();
+      redoDesignChange();
+      return;
+    }
+
+    if (isModifier && key === "c") {
+      event.preventDefault();
+      copySelectedBlock();
+      return;
+    }
+
+    if (isModifier && key === "x") {
+      event.preventDefault();
+      copySelectedBlock();
+      removeSelectedBlock();
+      return;
+    }
+
+    if (isModifier && key === "v") {
+      event.preventDefault();
+      pasteBlockFromClipboard();
+      return;
+    }
+
+    if (event.key === "Delete") {
+      event.preventDefault();
+      removeSelectedBlock();
+    }
+  }
+
   return (
-    <Form method="post" className="template-editor">
-      <input
-        type="hidden"
-        name="templateDesign"
-        value={JSON.stringify(design)}
-      />
-      <div className="template-topbar">
-        <label>
-          <span>Template name</span>
-          <select
-            name="templateName"
-            value={name}
-            onChange={(event) => selectTemplate(event.currentTarget.value)}
-          >
-            {templates.map((savedTemplate) => (
-              <option key={savedTemplate.name} value={savedTemplate.name}>
-                {savedTemplate.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="template-topbar-actions">
-          <span className={dirty ? "template-state dirty" : "template-state"}>
-            {dirty ? "Unsaved" : "Saved"}
-          </span>
-          <button
-            type="button"
-            disabled={!dirty || saving}
-            onClick={revertTemplate}
-          >
-            <span aria-hidden="true">↶</span> Revert
-          </button>
-          <button
-            type="submit"
-            name="intent"
-            value="save-template"
-            disabled={saving || !canSaveTemplate || !design.blocks.length}
-          >
-            <span aria-hidden="true">✓</span> Save
-          </button>
-          <button
-            className="danger-button"
-            disabled={saving || templates.length <= 1}
-            name="intent"
-            value="delete-template"
-            onClick={(event) => {
-              if (
-                !window.confirm(`Delete "${name}"? This cannot be undone.`)
-              ) {
-                event.preventDefault();
-              }
-            }}
-            type="submit"
-          >
-            <span aria-hidden="true">×</span> Delete
-          </button>
-        </div>
-      </div>
-
-      <div className="page-settings">
-        <label>
-          <span>Page size</span>
-          <select
-            value={design.page.size || "custom"}
-            onChange={(event) => applyPageSize(event.currentTarget.value)}
-          >
-            {PAGE_SIZE_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>Width</span>
-          <input
-            min="288"
-            type="number"
-            value={design.page.width}
-            onChange={(event) =>
-              updatePage({
-                size: "custom",
-                width: Number(event.currentTarget.value),
-              })
-            }
-          />
-        </label>
-        <label>
-          <span>Height</span>
-          <input
-            min="288"
-            type="number"
-            value={design.page.height}
-            onChange={(event) =>
-              updatePage({
-                size: "custom",
-                height: Number(event.currentTarget.value),
-              })
-            }
-          />
-        </label>
-        {(
-          ["marginTop", "marginRight", "marginBottom", "marginLeft"] as const
-        ).map((key) => (
-          <label key={key}>
-            <span>{key.replace("margin", "")}</span>
-            <input
-              min="0"
-              type="number"
-              value={design.page[key] || 0}
-              onChange={(event) =>
-                updatePage({ [key]: Number(event.currentTarget.value) })
-              }
-            />
+    <>
+      <Form
+        method="post"
+        className="template-editor"
+        onKeyDown={handleTemplateEditorKeyDown}
+      >
+        <input
+          type="hidden"
+          name="templateDesign"
+          value={JSON.stringify(design)}
+        />
+        <div className="template-topbar">
+          <label>
+            <span>Template name</span>
+            <select
+              name="templateName"
+              value={name}
+              onChange={(event) => selectTemplate(event.currentTarget.value)}
+            >
+              {templates.map((savedTemplate) => (
+                <option key={savedTemplate.name} value={savedTemplate.name}>
+                  {savedTemplate.name}
+                </option>
+              ))}
+            </select>
           </label>
-        ))}
-      </div>
-
-      <div className="template-workspace">
-        <aside className="template-sidebar">
-          <div className="template-panel">
-            <h3>Add block</h3>
-            <div className="template-button-grid">
-              <button type="button" onClick={() => addBlock("text")}>
-                <span aria-hidden="true">T</span> Text
-              </button>
-              <button type="button" onClick={() => addBlock("image", "")}>
-                <span aria-hidden="true">▧</span> Image
-              </button>
-              <button
-                type="button"
-                onClick={() => addBlock("image", "items.firstImage")}
-              >
-                <span aria-hidden="true">▣</span> Product image
-              </button>
-              <button type="button" onClick={() => addBlock("items")}>
-                <span aria-hidden="true">▦</span> Items table
-              </button>
-            </div>
-          </div>
-
-          <div className="template-panel">
-            <h3>Fields</h3>
-            <div className="field-list">
-              {TEMPLATE_FIELD_GROUPS.map((group) => (
-                <div className="field-group" key={group.label}>
-                  <strong>{group.label}</strong>
-                  {group.fields.map((field) => (
-                    <button
-                      key={field.value}
-                      type="button"
-                      onClick={() => addBlock("field", field.value)}
-                    >
-                      {field.label}
-                    </button>
-                  ))}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="template-panel">
-            <h3>Layers</h3>
-            <div className="template-layer-list">
-              {[...design.blocks].reverse().map((block) => (
-                <button
-                  className={block.id === selectedId ? "selected" : ""}
-                  key={block.id}
-                  type="button"
-                  onClick={() => setSelectedId(block.id)}
-                >
-                  <span>{blockLabel(block)}</span>
-                  <small>{blockTypeLabel(block)}</small>
-                </button>
-              ))}
-            </div>
-          </div>
-        </aside>
-
-        <div className="template-stage-column">
-          <div className="template-toolbar">
-            <label>
-              <span>Zoom</span>
-              <select
-                value={zoom}
-                onChange={(event) =>
-                  setZoom(normalizeZoom(Number(event.currentTarget.value)))
-                }
-              >
-                <option value={0.5}>50%</option>
-                <option value={0.6}>60%</option>
-                <option value={0.65}>65%</option>
-                <option value={0.75}>75%</option>
-                <option value={0.9}>90%</option>
-                <option value={1}>100%</option>
-              </select>
-            </label>
-            <label className="checkbox-row compact-checkbox">
-              <input
-                type="checkbox"
-                checked={snapToGrid}
-                onChange={(event) => setSnapToGrid(event.currentTarget.checked)}
-              />
-              <span>Snap</span>
-            </label>
+          <div className="template-topbar-actions">
+            <span className={dirty ? "template-state dirty" : "template-state"}>
+              {dirty ? "Unsaved" : "Saved"}
+            </span>
             <button
               type="button"
-              disabled={!selectedBlock}
-              onClick={duplicateSelectedBlock}
+              disabled={!dirty || saving}
+              onClick={revertTemplate}
             >
-              <span aria-hidden="true">⧉</span> Duplicate
+              <span aria-hidden="true">↶</span> Revert
             </button>
             <button
-              type="button"
-              disabled={selectedIndex <= 0}
-              onClick={() => moveLayer(-1)}
+              type="submit"
+              name="intent"
+              value="save-template"
+              disabled={saving || !canSaveTemplate || !design.blocks.length}
             >
-              <span aria-hidden="true">‹</span> Back
+              <span aria-hidden="true">✓</span> Save
             </button>
             <button
-              type="button"
-              disabled={
-                selectedIndex < 0 || selectedIndex >= design.blocks.length - 1
-              }
-              onClick={() => moveLayer(1)}
-            >
-              <span aria-hidden="true">›</span> Forward
-            </button>
-            <button
-              type="button"
               className="danger-button"
-              disabled={!selectedBlock}
-              onClick={removeSelectedBlock}
+              disabled={saving || templates.length <= 1}
+              name="intent"
+              value="delete-template"
+              onClick={(event) => {
+                if (
+                  !window.confirm(`Delete "${name}"? This cannot be undone.`)
+                ) {
+                  event.preventDefault();
+                }
+              }}
+              type="submit"
             >
               <span aria-hidden="true">×</span> Delete
             </button>
           </div>
+        </div>
 
-          <div className="template-stage" onWheel={handleStageWheel}>
-            <div
-              className="template-canvas-space"
-              style={{
-                width: design.page.width * zoom,
-                height: design.page.height * zoom,
-              }}
+        <div className="page-settings">
+          <label>
+            <span>Page size</span>
+            <select
+              value={design.page.size || "custom"}
+              onChange={(event) => applyPageSize(event.currentTarget.value)}
             >
+              {PAGE_SIZE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Width</span>
+            <input
+              min="288"
+              type="number"
+              value={design.page.width}
+              onChange={(event) =>
+                updatePage({
+                  size: "custom",
+                  width: Number(event.currentTarget.value),
+                })
+              }
+            />
+          </label>
+          <label>
+            <span>Height</span>
+            <input
+              min="288"
+              type="number"
+              value={design.page.height}
+              onChange={(event) =>
+                updatePage({
+                  size: "custom",
+                  height: Number(event.currentTarget.value),
+                })
+              }
+            />
+          </label>
+          {(
+            ["marginTop", "marginRight", "marginBottom", "marginLeft"] as const
+          ).map((key) => (
+            <label key={key}>
+              <span>{key.replace("margin", "")}</span>
+              <input
+                min="0"
+                type="number"
+                value={design.page[key] || 0}
+                onChange={(event) =>
+                  updatePage({ [key]: Number(event.currentTarget.value) })
+                }
+              />
+            </label>
+          ))}
+        </div>
+
+        <div className="template-workspace">
+          <aside className="template-sidebar">
+            <div className="template-panel">
+              <h3>Add block</h3>
+              <div className="template-button-grid">
+                <button type="button" onClick={() => addBlock("text")}>
+                  <span aria-hidden="true">T</span> Text
+                </button>
+                <button type="button" onClick={() => addBlock("image", "")}>
+                  <span aria-hidden="true">▧</span> Image
+                </button>
+                <button
+                  type="button"
+                  onClick={() => addBlock("image", "items.firstImage")}
+                >
+                  <span aria-hidden="true">▣</span> Product image
+                </button>
+                <button type="button" onClick={() => addBlock("items")}>
+                  <span aria-hidden="true">▦</span> Items table
+                </button>
+              </div>
+            </div>
+
+            <div className="template-panel">
+              <h3>Fields</h3>
+              <div className="field-list">
+                {TEMPLATE_FIELD_GROUPS.map((group) => (
+                  <div className="field-group" key={group.label}>
+                    <strong>{group.label}</strong>
+                    {group.fields.map((field) => (
+                      <button
+                        key={field.value}
+                        type="button"
+                        onClick={() => addBlock("field", field.value)}
+                      >
+                        {field.label}
+                      </button>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="template-panel">
+              <h3>Layers</h3>
+              <div className="template-layer-list">
+                {[...design.blocks].reverse().map((block) => (
+                  <button
+                    className={block.id === selectedId ? "selected" : ""}
+                    key={block.id}
+                    type="button"
+                    onClick={() => setSelectedId(block.id)}
+                  >
+                    <span>{blockLabel(block)}</span>
+                    <small>{blockTypeLabel(block)}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </aside>
+
+          <div className="template-stage-column">
+            <div className="template-toolbar">
+              <label>
+                <span>Zoom</span>
+                <select
+                  value={zoom}
+                  onChange={(event) =>
+                    setZoom(normalizeZoom(Number(event.currentTarget.value)))
+                  }
+                >
+                  <option value={0.5}>50%</option>
+                  <option value={0.6}>60%</option>
+                  <option value={0.65}>65%</option>
+                  <option value={0.75}>75%</option>
+                  <option value={0.9}>90%</option>
+                  <option value={1}>100%</option>
+                </select>
+              </label>
+              <label className="checkbox-row compact-checkbox">
+                <input
+                  type="checkbox"
+                  checked={snapToGrid}
+                  onChange={(event) =>
+                    setSnapToGrid(event.currentTarget.checked)
+                  }
+                />
+                <span>Snap</span>
+              </label>
+              <button
+                type="button"
+                disabled={!selectedBlock}
+                onClick={duplicateSelectedBlock}
+              >
+                <span aria-hidden="true">⧉</span> Duplicate
+              </button>
+              <button
+                type="button"
+                disabled={selectedIndex <= 0}
+                onClick={() => moveLayer(-1)}
+              >
+                <span aria-hidden="true">‹</span> Back
+              </button>
+              <button
+                type="button"
+                disabled={
+                  selectedIndex < 0 || selectedIndex >= design.blocks.length - 1
+                }
+                onClick={() => moveLayer(1)}
+              >
+                <span aria-hidden="true">›</span> Forward
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                disabled={!selectedBlock}
+                onClick={removeSelectedBlock}
+              >
+                <span aria-hidden="true">×</span> Delete
+              </button>
+            </div>
+
+            <div className="template-stage" onWheel={handleStageWheel}>
               <div
-                className="template-canvas"
-                onPointerCancel={stopCanvasOperation}
-                onPointerMove={updateCanvasOperation}
-                onPointerUp={stopCanvasOperation}
-                ref={canvasRef}
+                className="template-canvas-space"
                 style={{
-                  height: design.page.height,
-                  transform: `scale(${zoom})`,
-                  width: design.page.width,
+                  width: design.page.width * zoom,
+                  height: design.page.height * zoom,
                 }}
               >
                 <div
-                  className="margin-guide"
+                  className="template-canvas"
+                  onPointerCancel={stopCanvasOperation}
+                  onPointerMove={updateCanvasOperation}
+                  onPointerUp={stopCanvasOperation}
+                  ref={canvasRef}
                   style={{
-                    bottom: design.page.marginBottom || 0,
-                    left: design.page.marginLeft || 0,
-                    right: design.page.marginRight || 0,
-                    top: design.page.marginTop || 0,
+                    height: design.page.height,
+                    transform: `scale(${zoom})`,
+                    width: design.page.width,
                   }}
-                />
-                {design.blocks.map((block) => {
-                  const selected = block.id === selectedId;
-                  const editingText =
-                    block.type === "text" && editingTextBlockId === block.id;
-                  const editingItems =
-                    block.type === "items" && editingItemsBlockId === block.id;
+                >
+                  <div
+                    className="margin-guide"
+                    style={{
+                      bottom: design.page.marginBottom || 0,
+                      left: design.page.marginLeft || 0,
+                      right: design.page.marginRight || 0,
+                      top: design.page.marginTop || 0,
+                    }}
+                  />
+                  {design.blocks.map((block) => {
+                    const selected = block.id === selectedId;
+                    const editingText =
+                      block.type === "text" && editingTextBlockId === block.id;
+                    const editingItems =
+                      block.type === "items" &&
+                      editingItemsBlockId === block.id;
 
-                  return (
-                    <div
-                      className={`template-block-preview ${
-                        selected ? "selected" : ""
-                      }`}
-                      key={block.id}
-                      onKeyDown={handleBlockKeyDown}
-                      onDoubleClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        openCanvasEditor(block);
-                      }}
-                      onPointerDown={(event) => startMove(event, block)}
-                      role="button"
-                      style={previewStyle(block)}
-                      tabIndex={0}
-                    >
-                      {editingText ? (
-                        <RichTextBox
-                          block={block}
-                          className="template-inline-textarea"
-                          editorRef={(element) => {
-                            inlineTextRef.current = element;
-                          }}
-                          onBlur={(element) => {
-                            if (activeRichEditorRef.current === element) {
-                              activeRichEditorRef.current = null;
-                            }
+                    return (
+                      <div
+                        className={`template-block-preview ${
+                          selected ? "selected" : ""
+                        }`}
+                        key={block.id}
+                        onKeyDown={handleBlockKeyDown}
+                        onDoubleClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          openCanvasEditor(block);
+                        }}
+                        onPointerDown={(event) => startMove(event, block)}
+                        role="button"
+                        style={previewStyle(block)}
+                        tabIndex={0}
+                      >
+                        {editingText ? (
+                          <RichTextBox
+                            block={block}
+                            className="template-inline-textarea"
+                            editorRef={(element) => {
+                              inlineTextRef.current = element;
+                            }}
+                            onBlur={(element) => {
+                              if (activeRichEditorRef.current === element) {
+                                activeRichEditorRef.current = null;
+                              }
 
-                            setEditingTextBlockId(null);
-                          }}
-                          onFocus={(element) => {
-                            activeRichEditorRef.current = element;
-                            rememberRichSelection(element);
-                          }}
-                          onInput={handleRichTextInput}
-                          onKeyDown={handleRichTextKeyDown}
-                          onSelectionChange={rememberRichSelection}
-                          style={richTextEditorStyle(block)}
-                        />
-                      ) : editingItems ? (
-                        <div className="template-inline-table-editor">
-                          <div className="inline-editor-heading">
-                            Item table columns
-                            <button
-                              type="button"
-                              onClick={() => setEditingItemsBlockId(null)}
-                            >
-                              Done
-                            </button>
-                          </div>
-                          {normalizeItemColumns(block.itemColumns).map(
-                            (column, index, columns) => (
-                              <div
-                                className="inline-table-column-row"
-                                key={column.key}
+                              setMentionMenu(null);
+                              setEditingTextBlockId(null);
+                            }}
+                            onFocus={(element) => {
+                              activeRichEditorRef.current = element;
+                              rememberRichSelection(element);
+                            }}
+                            onInput={handleRichTextInput}
+                            onKeyDown={handleRichTextKeyDown}
+                            onSelectionChange={rememberRichSelection}
+                            style={richTextEditorStyle(block)}
+                          />
+                        ) : editingItems ? (
+                          <div className="template-inline-table-editor">
+                            <div className="inline-editor-heading">
+                              Item table columns
+                              <button
+                                type="button"
+                                onClick={() => setEditingItemsBlockId(null)}
                               >
-                                <label className="checkbox-row compact-checkbox">
+                                Done
+                              </button>
+                            </div>
+                            {normalizeItemColumns(block.itemColumns).map(
+                              (column, index, columns) => (
+                                <div
+                                  className="inline-table-column-row"
+                                  key={column.key}
+                                >
+                                  <label className="checkbox-row compact-checkbox">
+                                    <input
+                                      type="checkbox"
+                                      checked={column.enabled}
+                                      onKeyDown={(event) =>
+                                        event.stopPropagation()
+                                      }
+                                      onChange={(event) =>
+                                        toggleItemColumnInBlock(
+                                          block,
+                                          column.key,
+                                          event.currentTarget.checked,
+                                        )
+                                      }
+                                    />
+                                    <span>{column.key}</span>
+                                  </label>
                                   <input
-                                    type="checkbox"
-                                    checked={column.enabled}
+                                    aria-label={`${column.key} label`}
+                                    value={column.label}
                                     onKeyDown={(event) =>
                                       event.stopPropagation()
                                     }
                                     onChange={(event) =>
-                                      toggleItemColumnInBlock(
+                                      updateItemColumnInBlock(
                                         block,
                                         column.key,
-                                        event.currentTarget.checked,
+                                        {
+                                          label: event.currentTarget.value,
+                                        },
                                       )
                                     }
                                   />
-                                  <span>{column.key}</span>
-                                </label>
-                                <input
-                                  aria-label={`${column.key} label`}
-                                  value={column.label}
-                                  onKeyDown={(event) => event.stopPropagation()}
-                                  onChange={(event) =>
-                                    updateItemColumnInBlock(block, column.key, {
-                                      label: event.currentTarget.value,
-                                    })
-                                  }
-                                />
-                                <input
-                                  aria-label={`${column.key} width`}
-                                  min="32"
-                                  type="number"
-                                  value={column.width}
-                                  onKeyDown={(event) => event.stopPropagation()}
-                                  onChange={(event) =>
-                                    updateItemColumnInBlock(block, column.key, {
-                                      width: Number(event.currentTarget.value),
-                                    })
-                                  }
-                                />
-                                <button
-                                  type="button"
-                                  disabled={index === 0}
-                                  onClick={() =>
-                                    moveItemColumnInBlock(block, column.key, -1)
-                                  }
-                                >
-                                  Up
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={index === columns.length - 1}
-                                  onClick={() =>
-                                    moveItemColumnInBlock(block, column.key, 1)
-                                  }
-                                >
-                                  Down
-                                </button>
-                              </div>
-                            ),
-                          )}
-                        </div>
-                      ) : (
-                        <TemplateBlockPreview block={block} />
-                      )}
-                      {selected &&
-                      !editingText &&
-                      !editingItems &&
-                      (block.type === "text" || block.type === "items") ? (
-                        <button
-                          className="canvas-edit-button"
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openCanvasEditor(block);
-                          }}
-                        >
-                          {block.type === "items" ? "Edit table" : "Edit text"}
-                        </button>
-                      ) : null}
-                      {selected && !editingText && !editingItems
-                        ? RESIZE_HANDLES.map((handle) => (
-                            <span
-                              className={`resize-handle ${handle}`}
-                              data-resize-handle={handle}
-                              key={handle}
-                              onPointerDown={(event) =>
-                                startResize(event, block, handle)
-                              }
-                            />
-                          ))
-                        : null}
-                    </div>
-                  );
-                })}
+                                  <input
+                                    aria-label={`${column.key} width`}
+                                    min="32"
+                                    type="number"
+                                    value={column.width}
+                                    onKeyDown={(event) =>
+                                      event.stopPropagation()
+                                    }
+                                    onChange={(event) =>
+                                      updateItemColumnInBlock(
+                                        block,
+                                        column.key,
+                                        {
+                                          width: Number(
+                                            event.currentTarget.value,
+                                          ),
+                                        },
+                                      )
+                                    }
+                                  />
+                                  <button
+                                    type="button"
+                                    disabled={index === 0}
+                                    onClick={() =>
+                                      moveItemColumnInBlock(
+                                        block,
+                                        column.key,
+                                        -1,
+                                      )
+                                    }
+                                  >
+                                    Up
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={index === columns.length - 1}
+                                    onClick={() =>
+                                      moveItemColumnInBlock(
+                                        block,
+                                        column.key,
+                                        1,
+                                      )
+                                    }
+                                  >
+                                    Down
+                                  </button>
+                                </div>
+                              ),
+                            )}
+                          </div>
+                        ) : (
+                          <TemplateBlockPreview block={block} />
+                        )}
+                        {selected ? (
+                          <span
+                            className="canvas-move-handle"
+                            data-drag-handle="true"
+                            title="Drag to move"
+                          >
+                            <span aria-hidden="true">⋮⋮</span>
+                          </span>
+                        ) : null}
+                        {selected &&
+                        !editingText &&
+                        !editingItems &&
+                        (block.type === "text" || block.type === "items") ? (
+                          <button
+                            className="canvas-edit-button"
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openCanvasEditor(block);
+                            }}
+                          >
+                            {block.type === "items"
+                              ? "Edit table"
+                              : "Edit text"}
+                          </button>
+                        ) : null}
+                        {selected && !editingText && !editingItems
+                          ? RESIZE_HANDLES.map((handle) => (
+                              <span
+                                className={`resize-handle ${handle}`}
+                                data-resize-handle={handle}
+                                key={handle}
+                                onPointerDown={(event) =>
+                                  startResize(event, block, handle)
+                                }
+                              />
+                            ))
+                          : null}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <div className="template-inspector">
-          {selectedBlock ? (
-            <>
-              <div className="template-inspector-heading">
-                <div>
-                  <div className="field-label">Selected block</div>
-                  <strong>{blockLabel(selectedBlock)}</strong>
-                </div>
-                <span>{blockTypeLabel(selectedBlock)}</span>
-              </div>
-              {selectedBlock.type === "field" ||
-              selectedBlock.type === "image" ? (
-                <label>
-                  <span>Data field</span>
-                  <select
-                    value={selectedBlock.field || ""}
-                    onChange={(event) =>
-                      updateBlock(selectedBlock.id, {
-                        field: event.currentTarget.value,
-                        label:
-                          fieldFor(event.currentTarget.value)?.label ||
-                          selectedBlock.label,
-                      })
-                    }
-                  >
-                    {selectedBlock.type === "image" ? (
-                      <option value="">Custom image URL</option>
-                    ) : null}
-                    {(selectedBlock.type === "image"
-                      ? TEMPLATE_FIELDS.filter(
-                          (field) => field.value === "items.firstImage",
-                        )
-                      : TEMPLATE_FIELDS
-                    ).map((field) => (
-                      <option key={field.value} value={field.value}>
-                        {field.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-              {selectedBlock.type === "text" ? (
-                <div className="rich-text-panel">
-                  <span>Text</span>
-                  <div className="rich-text-toolbar">
-                    <button
-                      type="button"
-                      title="Bold selected text"
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => applyRichTextCommand("bold")}
-                    >
-                      <strong>B</strong>
-                    </button>
-                    <button
-                      type="button"
-                      title="Italic selected text"
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => applyRichTextCommand("italic")}
-                    >
-                      <em>I</em>
-                    </button>
-                    <button
-                      type="button"
-                      title="Underline selected text"
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => applyRichTextCommand("underline")}
-                    >
-                      <span className="underline-icon">U</span>
-                    </button>
-                    <label>
-                      <span>Font</span>
-                      <select
-                        defaultValue=""
-                        onChange={(event) => {
-                          if (event.currentTarget.value) {
-                            applyRichTextFontFamily(event.currentTarget.value);
-                            event.currentTarget.value = "";
-                          }
-                        }}
-                      >
-                        <option value="">Font</option>
-                        {FONT_FAMILIES.map((font) => (
-                          <option key={font.value} value={font.value}>
-                            {font.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>Color</span>
-                      <input
-                        type="color"
-                        defaultValue="#111827"
-                        onChange={(event) =>
-                          wrapRichSelection({
-                            color: event.currentTarget.value,
-                          })
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>Size</span>
-                      <select
-                        defaultValue=""
-                        onChange={(event) => {
-                          if (event.currentTarget.value) {
-                            applyRichTextFontSize(event.currentTarget.value);
-                            event.currentTarget.value = "";
-                          }
-                        }}
-                      >
-                        <option value="">Aa</option>
-                        <option value="10">10</option>
-                        <option value="12">12</option>
-                        <option value="14">14</option>
-                        <option value="16">16</option>
-                        <option value="18">18</option>
-                        <option value="22">22</option>
-                        <option value="28">28</option>
-                      </select>
-                    </label>
+          <div className="template-inspector">
+            {selectedBlock ? (
+              <>
+                <div className="template-inspector-heading">
+                  <div>
+                    <div className="field-label">Selected block</div>
+                    <strong>{blockLabel(selectedBlock)}</strong>
                   </div>
-                  <RichTextBox
-                    block={selectedBlock}
-                    className="template-rich-textbox"
-                    editorRef={(element) => {
-                      inspectorTextRef.current = element;
-                    }}
-                    onFocus={(element) => {
-                      activeRichEditorRef.current = element;
-                      rememberRichSelection(element);
-                    }}
-                    onInput={handleRichTextInput}
-                    onKeyDown={handleRichTextKeyDown}
-                    onSelectionChange={rememberRichSelection}
-                    style={richTextEditorStyle(selectedBlock)}
-                  />
+                  <span>{blockTypeLabel(selectedBlock)}</span>
                 </div>
-              ) : null}
-              {selectedBlock.type === "text" ? (
-                <div className="token-inserter">
-                  <select
-                    value={tokenField}
-                    onChange={(event) =>
-                      setTokenField(event.currentTarget.value)
-                    }
-                  >
-                    {TEMPLATE_FIELDS.map((field) => (
-                      <option key={field.value} value={field.value}>
-                        {field.label}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="button" onClick={insertFieldToken}>
-                    Insert variable
-                  </button>
-                </div>
-              ) : null}
-              {selectedBlock.type === "image" ? (
-                <label>
-                  <span>Custom image URL</span>
-                  <input
-                    value={selectedBlock.imageUrl || ""}
-                    onChange={(event) =>
-                      updateBlock(selectedBlock.id, {
-                        imageUrl: event.currentTarget.value,
-                      })
-                    }
-                  />
-                </label>
-              ) : null}
-              {selectedBlock.type === "items" ? (
-                <div className="item-column-editor">
-                  <div className="field-label">Item columns</div>
-                  <div className="item-column-list">
-                    {selectedItemColumns.map((column, index, columns) => (
-                      <div
-                        className={
-                          selectedItemColumn?.key === column.key
-                            ? "item-column-pill selected"
-                            : "item-column-pill"
-                        }
-                        key={column.key}
+                {selectedBlock.type === "field" ||
+                selectedBlock.type === "image" ? (
+                  <label>
+                    <span>Data field</span>
+                    <select
+                      value={selectedBlock.field || ""}
+                      onChange={(event) =>
+                        updateBlock(selectedBlock.id, {
+                          field: event.currentTarget.value,
+                          label:
+                            fieldFor(event.currentTarget.value)?.label ||
+                            selectedBlock.label,
+                        })
+                      }
+                    >
+                      {selectedBlock.type === "image" ? (
+                        <option value="">Custom image URL</option>
+                      ) : null}
+                      {(selectedBlock.type === "image"
+                        ? TEMPLATE_FIELDS.filter(
+                            (field) => field.value === "items.firstImage",
+                          )
+                        : TEMPLATE_FIELDS
+                      ).map((field) => (
+                        <option key={field.value} value={field.value}>
+                          {field.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                {selectedBlock.type === "text" ? (
+                  <div className="rich-text-panel">
+                    <span>Text</span>
+                    <div className="rich-text-toolbar">
+                      <button
+                        type="button"
+                        title="Bold selected text"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => applyRichTextCommand("bold")}
                       >
-                        <input
-                          aria-label={`Show ${column.key}`}
-                          type="checkbox"
-                          checked={column.enabled}
-                          onChange={(event) =>
-                            toggleItemColumn(
-                              column.key,
-                              event.currentTarget.checked,
-                            )
-                          }
-                        />
-                        <button
-                          className="item-column-select"
-                          type="button"
-                          onClick={() => setSelectedItemColumnKey(column.key)}
-                        >
-                          <span>{column.label || column.key}</span>
-                          <small>{column.width}px</small>
-                        </button>
-                        <span className="item-column-actions">
-                          <button
-                            type="button"
-                            disabled={index === 0}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              moveItemColumn(column.key, -1);
-                            }}
-                          >
-                            ↑
-                          </button>
-                          <button
-                            type="button"
-                            disabled={index === columns.length - 1}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              moveItemColumn(column.key, 1);
-                            }}
-                          >
-                            ↓
-                          </button>
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-
-                  {selectedItemColumn ? (
-                    <div className="item-column-detail">
-                      <div className="field-label">
-                        Editing {selectedItemColumn.key}
-                      </div>
+                        <strong>B</strong>
+                      </button>
+                      <button
+                        type="button"
+                        title="Italic selected text"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => applyRichTextCommand("italic")}
+                      >
+                        <em>I</em>
+                      </button>
+                      <button
+                        type="button"
+                        title="Underline selected text"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => applyRichTextCommand("underline")}
+                      >
+                        <span className="underline-icon">U</span>
+                      </button>
                       <label>
-                        <span>Label</span>
+                        <span>Font</span>
+                        <select
+                          defaultValue=""
+                          onChange={(event) => {
+                            if (event.currentTarget.value) {
+                              applyRichTextFontFamily(
+                                event.currentTarget.value,
+                              );
+                              event.currentTarget.value = "";
+                            }
+                          }}
+                        >
+                          <option value="">Font</option>
+                          {FONT_FAMILIES.map((font) => (
+                            <option key={font.value} value={font.value}>
+                              {font.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Color</span>
                         <input
-                          value={selectedItemColumn.label}
+                          type="color"
+                          defaultValue="#111827"
                           onChange={(event) =>
-                            updateItemColumn(selectedItemColumn.key, {
-                              label: event.currentTarget.value,
+                            wrapRichSelection({
+                              color: event.currentTarget.value,
                             })
                           }
                         />
                       </label>
-                      <div className="geometry-grid">
-                        <label>
-                          <span>Width</span>
-                          <input
-                            min="32"
-                            type="number"
-                            value={selectedItemColumn.width}
-                            onChange={(event) =>
-                              updateItemColumn(selectedItemColumn.key, {
-                                width: Number(event.currentTarget.value),
-                              })
+                      <label>
+                        <span>Size</span>
+                        <select
+                          defaultValue=""
+                          onChange={(event) => {
+                            if (event.currentTarget.value) {
+                              applyRichTextFontSize(event.currentTarget.value);
+                              event.currentTarget.value = "";
                             }
-                          />
-                        </label>
-                        <label>
-                          <span>Align</span>
-                          <select
-                            value={selectedItemColumn.align}
-                            onChange={(event) =>
-                              updateItemColumn(selectedItemColumn.key, {
-                                align: event.currentTarget
-                                  .value as EditorItemColumn["align"],
-                              })
-                            }
-                          >
-                            <option value="left">Left</option>
-                            <option value="center">Center</option>
-                            <option value="right">Right</option>
-                          </select>
-                        </label>
-                      </div>
-                      <div className="item-style-grid">
-                        <div>
-                          <div className="field-label">Header text</div>
-                          <div className="style-grid">
-                            <label>
-                              <span>Size</span>
-                              <input
-                                min="7"
-                                type="number"
-                                value={selectedItemColumn.labelFontSize}
-                                onChange={(event) =>
-                                  updateItemColumn(selectedItemColumn.key, {
-                                    labelFontSize: Number(
-                                      event.currentTarget.value,
-                                    ),
-                                  })
-                                }
-                              />
-                            </label>
-                            <label>
-                              <span>Color</span>
-                              <input
-                                type="color"
-                                value={selectedItemColumn.labelColor}
-                                onChange={(event) =>
-                                  updateItemColumn(selectedItemColumn.key, {
-                                    labelColor: event.currentTarget.value,
-                                  })
-                                }
-                              />
-                            </label>
-                          </div>
-                          <div className="format-button-row">
-                            <button
-                              aria-pressed={
-                                selectedItemColumn.labelFontWeight === "700"
-                              }
-                              className={
-                                selectedItemColumn.labelFontWeight === "700"
-                                  ? "active"
-                                  : ""
-                              }
-                              type="button"
-                              onClick={() =>
-                                updateItemColumn(selectedItemColumn.key, {
-                                  labelFontWeight:
-                                    selectedItemColumn.labelFontWeight === "700"
-                                      ? "400"
-                                      : "700",
-                                })
-                              }
-                            >
-                              B
-                            </button>
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="field-label">Row text</div>
-                          <div className="style-grid">
-                            <label>
-                              <span>Size</span>
-                              <input
-                                min="7"
-                                type="number"
-                                value={selectedItemColumn.valueFontSize}
-                                onChange={(event) =>
-                                  updateItemColumn(selectedItemColumn.key, {
-                                    valueFontSize: Number(
-                                      event.currentTarget.value,
-                                    ),
-                                  })
-                                }
-                              />
-                            </label>
-                            <label>
-                              <span>Color</span>
-                              <input
-                                type="color"
-                                value={selectedItemColumn.valueColor}
-                                onChange={(event) =>
-                                  updateItemColumn(selectedItemColumn.key, {
-                                    valueColor: event.currentTarget.value,
-                                  })
-                                }
-                              />
-                            </label>
-                          </div>
-                          <div className="format-button-row">
-                            <button
-                              aria-pressed={
-                                selectedItemColumn.valueFontWeight === "700"
-                              }
-                              className={
-                                selectedItemColumn.valueFontWeight === "700"
-                                  ? "active"
-                                  : ""
-                              }
-                              type="button"
-                              onClick={() =>
-                                updateItemColumn(selectedItemColumn.key, {
-                                  valueFontWeight:
-                                    selectedItemColumn.valueFontWeight === "700"
-                                      ? "400"
-                                      : "700",
-                                })
-                              }
-                            >
-                              B
-                            </button>
-                          </div>
-                        </div>
-                      </div>
+                          }}
+                        >
+                          <option value="">Aa</option>
+                          <option value="10">10</option>
+                          <option value="12">12</option>
+                          <option value="14">14</option>
+                          <option value="16">16</option>
+                          <option value="18">18</option>
+                          <option value="22">22</option>
+                          <option value="28">28</option>
+                        </select>
+                      </label>
                     </div>
-                  ) : null}
-                </div>
-              ) : null}
-              <div className="geometry-grid">
-                {(["x", "y", "w", "h"] as const).map((key) => (
-                  <label key={key}>
-                    <span>{key}</span>
+                    <RichTextBox
+                      block={selectedBlock}
+                      className="template-rich-textbox"
+                      editorRef={(element) => {
+                        inspectorTextRef.current = element;
+                      }}
+                      onFocus={(element) => {
+                        activeRichEditorRef.current = element;
+                        rememberRichSelection(element);
+                      }}
+                      onBlur={() => setMentionMenu(null)}
+                      onInput={handleRichTextInput}
+                      onKeyDown={handleRichTextKeyDown}
+                      onSelectionChange={rememberRichSelection}
+                      style={richTextEditorStyle(selectedBlock)}
+                    />
+                  </div>
+                ) : null}
+                {selectedBlock.type === "text" ? (
+                  <div className="token-inserter">
+                    <select
+                      value={tokenField}
+                      onChange={(event) =>
+                        setTokenField(event.currentTarget.value)
+                      }
+                    >
+                      {TEMPLATE_FIELDS.map((field) => (
+                        <option key={field.value} value={field.value}>
+                          {field.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button type="button" onClick={insertFieldToken}>
+                      Insert variable
+                    </button>
+                  </div>
+                ) : null}
+                {selectedBlock.type === "image" ? (
+                  <label>
+                    <span>Custom image URL</span>
                     <input
-                      min="0"
-                      type="number"
-                      value={selectedBlock[key] || 0}
+                      value={selectedBlock.imageUrl || ""}
                       onChange={(event) =>
                         updateBlock(selectedBlock.id, {
-                          [key]: Number(event.currentTarget.value),
+                          imageUrl: event.currentTarget.value,
                         })
                       }
                     />
                   </label>
-                ))}
-              </div>
-              <div className="typography-grid">
-                <label className="wide-control">
-                  <span>Font</span>
-                  <select
-                    value={selectedBlock.fontFamily || FONT_FAMILIES[0].value}
-                    onChange={(event) =>
+                ) : null}
+                {selectedBlock.type === "items" ? (
+                  <div className="item-column-editor">
+                    <div className="field-label">Item columns</div>
+                    <div className="item-column-list">
+                      {selectedItemColumns.map((column, index, columns) => (
+                        <div
+                          className={
+                            selectedItemColumn?.key === column.key
+                              ? "item-column-pill selected"
+                              : "item-column-pill"
+                          }
+                          key={column.key}
+                        >
+                          <input
+                            aria-label={`Show ${column.key}`}
+                            type="checkbox"
+                            checked={column.enabled}
+                            onChange={(event) =>
+                              toggleItemColumn(
+                                column.key,
+                                event.currentTarget.checked,
+                              )
+                            }
+                          />
+                          <button
+                            className="item-column-select"
+                            type="button"
+                            onClick={() => setSelectedItemColumnKey(column.key)}
+                          >
+                            <span>{column.label || column.key}</span>
+                            <small>{column.width}px</small>
+                          </button>
+                          <span className="item-column-actions">
+                            <button
+                              type="button"
+                              disabled={index === 0}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                moveItemColumn(column.key, -1);
+                              }}
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              disabled={index === columns.length - 1}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                moveItemColumn(column.key, 1);
+                              }}
+                            >
+                              ↓
+                            </button>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {selectedItemColumn ? (
+                      <div className="item-column-detail">
+                        <div className="field-label">
+                          Editing {selectedItemColumn.key}
+                        </div>
+                        <label>
+                          <span>Label</span>
+                          <input
+                            value={selectedItemColumn.label}
+                            onChange={(event) =>
+                              updateItemColumn(selectedItemColumn.key, {
+                                label: event.currentTarget.value,
+                              })
+                            }
+                          />
+                        </label>
+                        <div className="geometry-grid">
+                          <label>
+                            <span>Width</span>
+                            <input
+                              min="32"
+                              type="number"
+                              value={selectedItemColumn.width}
+                              onChange={(event) =>
+                                updateItemColumn(selectedItemColumn.key, {
+                                  width: Number(event.currentTarget.value),
+                                })
+                              }
+                            />
+                          </label>
+                          <label>
+                            <span>Align</span>
+                            <select
+                              value={selectedItemColumn.align}
+                              onChange={(event) =>
+                                updateItemColumn(selectedItemColumn.key, {
+                                  align: event.currentTarget
+                                    .value as EditorItemColumn["align"],
+                                })
+                              }
+                            >
+                              <option value="left">Left</option>
+                              <option value="center">Center</option>
+                              <option value="right">Right</option>
+                            </select>
+                          </label>
+                        </div>
+                        <div className="item-style-grid">
+                          <div>
+                            <div className="field-label">Header text</div>
+                            <div className="style-grid">
+                              <label>
+                                <span>Size</span>
+                                <input
+                                  min="7"
+                                  type="number"
+                                  value={selectedItemColumn.labelFontSize}
+                                  onChange={(event) =>
+                                    updateItemColumn(selectedItemColumn.key, {
+                                      labelFontSize: Number(
+                                        event.currentTarget.value,
+                                      ),
+                                    })
+                                  }
+                                />
+                              </label>
+                              <label>
+                                <span>Color</span>
+                                <input
+                                  type="color"
+                                  value={selectedItemColumn.labelColor}
+                                  onChange={(event) =>
+                                    updateItemColumn(selectedItemColumn.key, {
+                                      labelColor: event.currentTarget.value,
+                                    })
+                                  }
+                                />
+                              </label>
+                            </div>
+                            <div className="format-button-row">
+                              <button
+                                aria-pressed={
+                                  selectedItemColumn.labelFontWeight === "700"
+                                }
+                                className={
+                                  selectedItemColumn.labelFontWeight === "700"
+                                    ? "active"
+                                    : ""
+                                }
+                                type="button"
+                                onClick={() =>
+                                  updateItemColumn(selectedItemColumn.key, {
+                                    labelFontWeight:
+                                      selectedItemColumn.labelFontWeight ===
+                                      "700"
+                                        ? "400"
+                                        : "700",
+                                  })
+                                }
+                              >
+                                B
+                              </button>
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="field-label">Row text</div>
+                            <div className="style-grid">
+                              <label>
+                                <span>Size</span>
+                                <input
+                                  min="7"
+                                  type="number"
+                                  value={selectedItemColumn.valueFontSize}
+                                  onChange={(event) =>
+                                    updateItemColumn(selectedItemColumn.key, {
+                                      valueFontSize: Number(
+                                        event.currentTarget.value,
+                                      ),
+                                    })
+                                  }
+                                />
+                              </label>
+                              <label>
+                                <span>Color</span>
+                                <input
+                                  type="color"
+                                  value={selectedItemColumn.valueColor}
+                                  onChange={(event) =>
+                                    updateItemColumn(selectedItemColumn.key, {
+                                      valueColor: event.currentTarget.value,
+                                    })
+                                  }
+                                />
+                              </label>
+                            </div>
+                            <div className="format-button-row">
+                              <button
+                                aria-pressed={
+                                  selectedItemColumn.valueFontWeight === "700"
+                                }
+                                className={
+                                  selectedItemColumn.valueFontWeight === "700"
+                                    ? "active"
+                                    : ""
+                                }
+                                type="button"
+                                onClick={() =>
+                                  updateItemColumn(selectedItemColumn.key, {
+                                    valueFontWeight:
+                                      selectedItemColumn.valueFontWeight ===
+                                      "700"
+                                        ? "400"
+                                        : "700",
+                                  })
+                                }
+                              >
+                                B
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                <div className="geometry-grid">
+                  {(["x", "y", "w", "h"] as const).map((key) => (
+                    <label key={key}>
+                      <span>{key}</span>
+                      <input
+                        min="0"
+                        type="number"
+                        value={selectedBlock[key] || 0}
+                        onChange={(event) =>
+                          updateBlock(selectedBlock.id, {
+                            [key]: Number(event.currentTarget.value),
+                          })
+                        }
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div className="typography-grid">
+                  <label className="wide-control">
+                    <span>Font</span>
+                    <select
+                      value={selectedBlock.fontFamily || FONT_FAMILIES[0].value}
+                      onChange={(event) =>
+                        updateBlock(selectedBlock.id, {
+                          fontFamily: event.currentTarget.value,
+                        })
+                      }
+                    >
+                      {FONT_FAMILIES.map((font) => (
+                        <option key={font.value} value={font.value}>
+                          {font.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Size</span>
+                    <input
+                      min="8"
+                      type="number"
+                      value={selectedBlock.fontSize || 12}
+                      onChange={(event) =>
+                        updateBlock(selectedBlock.id, {
+                          fontSize: Number(event.currentTarget.value),
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Line</span>
+                    <input
+                      max="2.4"
+                      min="0.8"
+                      step="0.1"
+                      type="number"
+                      value={selectedBlock.lineHeight || 1.4}
+                      onChange={(event) =>
+                        updateBlock(selectedBlock.id, {
+                          lineHeight: Number(event.currentTarget.value),
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Weight</span>
+                    <select
+                      value={selectedBlock.fontWeight || "400"}
+                      onChange={(event) =>
+                        updateBlock(selectedBlock.id, {
+                          fontWeight: event.currentTarget.value,
+                        })
+                      }
+                    >
+                      <option value="400">Regular</option>
+                      <option value="700">Bold</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Align</span>
+                    <select
+                      value={selectedBlock.align || "left"}
+                      onChange={(event) =>
+                        updateBlock(selectedBlock.id, {
+                          align: event.currentTarget
+                            .value as TemplateBlock["align"],
+                        })
+                      }
+                    >
+                      <option value="left">Left</option>
+                      <option value="center">Center</option>
+                      <option value="right">Right</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="format-button-row">
+                  <button
+                    aria-pressed={selectedBlock.fontWeight === "700"}
+                    className={
+                      selectedBlock.fontWeight === "700" ? "active" : ""
+                    }
+                    title="Bold"
+                    type="button"
+                    onClick={() =>
                       updateBlock(selectedBlock.id, {
-                        fontFamily: event.currentTarget.value,
+                        fontWeight:
+                          selectedBlock.fontWeight === "700" ? "400" : "700",
                       })
                     }
                   >
-                    {FONT_FAMILIES.map((font) => (
-                      <option key={font.value} value={font.value}>
-                        {font.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Size</span>
-                  <input
-                    min="8"
-                    type="number"
-                    value={selectedBlock.fontSize || 12}
-                    onChange={(event) =>
+                    B
+                  </button>
+                  <button
+                    aria-pressed={selectedBlock.italic === true}
+                    className={selectedBlock.italic ? "active" : ""}
+                    title="Italic"
+                    type="button"
+                    onClick={() =>
                       updateBlock(selectedBlock.id, {
-                        fontSize: Number(event.currentTarget.value),
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  <span>Line</span>
-                  <input
-                    max="2.4"
-                    min="0.8"
-                    step="0.1"
-                    type="number"
-                    value={selectedBlock.lineHeight || 1.4}
-                    onChange={(event) =>
-                      updateBlock(selectedBlock.id, {
-                        lineHeight: Number(event.currentTarget.value),
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  <span>Weight</span>
-                  <select
-                    value={selectedBlock.fontWeight || "400"}
-                    onChange={(event) =>
-                      updateBlock(selectedBlock.id, {
-                        fontWeight: event.currentTarget.value,
+                        italic: selectedBlock.italic !== true,
                       })
                     }
                   >
-                    <option value="400">Regular</option>
-                    <option value="700">Bold</option>
-                  </select>
-                </label>
-                <label>
-                  <span>Align</span>
-                  <select
-                    value={selectedBlock.align || "left"}
-                    onChange={(event) =>
+                    I
+                  </button>
+                  <button
+                    aria-pressed={selectedBlock.underline === true}
+                    className={selectedBlock.underline ? "active" : ""}
+                    title="Underline"
+                    type="button"
+                    onClick={() =>
                       updateBlock(selectedBlock.id, {
-                        align: event.currentTarget
-                          .value as TemplateBlock["align"],
+                        underline: selectedBlock.underline !== true,
                       })
                     }
                   >
-                    <option value="left">Left</option>
-                    <option value="center">Center</option>
-                    <option value="right">Right</option>
-                  </select>
-                </label>
-              </div>
-              <div className="format-button-row">
-                <button
-                  aria-pressed={selectedBlock.fontWeight === "700"}
-                  className={selectedBlock.fontWeight === "700" ? "active" : ""}
-                  title="Bold"
-                  type="button"
-                  onClick={() =>
-                    updateBlock(selectedBlock.id, {
-                      fontWeight:
-                        selectedBlock.fontWeight === "700" ? "400" : "700",
-                    })
-                  }
-                >
-                  B
-                </button>
-                <button
-                  aria-pressed={selectedBlock.italic === true}
-                  className={selectedBlock.italic ? "active" : ""}
-                  title="Italic"
-                  type="button"
-                  onClick={() =>
-                    updateBlock(selectedBlock.id, {
-                      italic: selectedBlock.italic !== true,
-                    })
-                  }
-                >
-                  I
-                </button>
-                <button
-                  aria-pressed={selectedBlock.underline === true}
-                  className={selectedBlock.underline ? "active" : ""}
-                  title="Underline"
-                  type="button"
-                  onClick={() =>
-                    updateBlock(selectedBlock.id, {
-                      underline: selectedBlock.underline !== true,
-                    })
-                  }
-                >
-                  U
-                </button>
-                <button
-                  aria-pressed={selectedBlock.uppercase === true}
-                  className={selectedBlock.uppercase ? "active" : ""}
-                  title="Uppercase"
-                  type="button"
-                  onClick={() =>
-                    updateBlock(selectedBlock.id, {
-                      uppercase: selectedBlock.uppercase !== true,
-                    })
-                  }
-                >
-                  AA
-                </button>
-              </div>
-              <div className="style-grid">
-                <label>
-                  <span>Text</span>
-                  <input
-                    type="color"
-                    value={normalizeHex(selectedBlock.color, "#111827")}
-                    onChange={(event) =>
+                    U
+                  </button>
+                  <button
+                    aria-pressed={selectedBlock.uppercase === true}
+                    className={selectedBlock.uppercase ? "active" : ""}
+                    title="Uppercase"
+                    type="button"
+                    onClick={() =>
                       updateBlock(selectedBlock.id, {
-                        color: event.currentTarget.value,
+                        uppercase: selectedBlock.uppercase !== true,
                       })
                     }
-                  />
-                </label>
-                <label>
-                  <span>Fill</span>
-                  <input
-                    disabled={selectedBlock.background === "transparent"}
-                    type="color"
-                    value={
-                      selectedBlock.background === "transparent"
-                        ? "#ffffff"
-                        : normalizeHex(selectedBlock.background, "#ffffff")
-                    }
-                    onChange={(event) =>
-                      updateBlock(selectedBlock.id, {
-                        background: event.currentTarget.value,
-                      })
-                    }
-                  />
-                </label>
-              </div>
-              <div className="option-grid">
-                <label className="checkbox-row compact-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={selectedBlock.background !== "transparent"}
-                    onChange={(event) =>
-                      updateBlock(selectedBlock.id, {
-                        background: event.currentTarget.checked
+                  >
+                    AA
+                  </button>
+                </div>
+                <div className="style-grid">
+                  <label>
+                    <span>Text</span>
+                    <input
+                      type="color"
+                      value={normalizeHex(selectedBlock.color, "#111827")}
+                      onChange={(event) =>
+                        updateBlock(selectedBlock.id, {
+                          color: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Fill</span>
+                    <input
+                      disabled={selectedBlock.background === "transparent"}
+                      type="color"
+                      value={
+                        selectedBlock.background === "transparent"
                           ? "#ffffff"
-                          : "transparent",
-                      })
-                    }
-                  />
-                  <span>Fill</span>
-                </label>
-                <label className="checkbox-row compact-checkbox">
+                          : normalizeHex(selectedBlock.background, "#ffffff")
+                      }
+                      onChange={(event) =>
+                        updateBlock(selectedBlock.id, {
+                          background: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+                <div className="option-grid">
+                  <label className="checkbox-row compact-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={selectedBlock.background !== "transparent"}
+                      onChange={(event) =>
+                        updateBlock(selectedBlock.id, {
+                          background: event.currentTarget.checked
+                            ? "#ffffff"
+                            : "transparent",
+                        })
+                      }
+                    />
+                    <span>Fill</span>
+                  </label>
+                  <label className="checkbox-row compact-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={selectedBlock.border === true}
+                      onChange={(event) =>
+                        updateBlock(selectedBlock.id, {
+                          border: event.currentTarget.checked,
+                        })
+                      }
+                    />
+                    <span>Border</span>
+                  </label>
+                </div>
+                <label>
+                  <span>Padding</span>
                   <input
-                    type="checkbox"
-                    checked={selectedBlock.border === true}
+                    min="0"
+                    type="number"
+                    value={selectedBlock.padding || 0}
                     onChange={(event) =>
                       updateBlock(selectedBlock.id, {
-                        border: event.currentTarget.checked,
+                        padding: Number(event.currentTarget.value),
                       })
                     }
                   />
-                  <span>Border</span>
                 </label>
-              </div>
-              <label>
-                <span>Padding</span>
-                <input
-                  min="0"
-                  type="number"
-                  value={selectedBlock.padding || 0}
-                  onChange={(event) =>
-                    updateBlock(selectedBlock.id, {
-                      padding: Number(event.currentTarget.value),
-                    })
-                  }
-                />
-              </label>
-            </>
-          ) : (
-            <p className="empty-state">Select a block to edit it.</p>
-          )}
+              </>
+            ) : (
+              <p className="empty-state">Select a block to edit it.</p>
+            )}
+          </div>
         </div>
-      </div>
-    </Form>
+      </Form>
+      {mentionMenu ? (
+        <div
+          className="mention-menu"
+          style={{ left: mentionMenu.left, top: mentionMenu.top }}
+        >
+          <div className="mention-menu-heading">Variables</div>
+          {mentionMatches(mentionMenu.query).map((field) => (
+            <button
+              key={field.value}
+              type="button"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                const editor =
+                  activeRichEditorRef.current?.dataset.blockId ===
+                  mentionMenu.blockId
+                    ? activeRichEditorRef.current
+                    : document.querySelector<HTMLDivElement>(
+                        `[data-template-rich-editor="${mentionMenu.blockId}"]`,
+                      );
+                const block = design.blocks.find(
+                  (item) => item.id === mentionMenu.blockId,
+                );
+
+                if (editor && block?.type === "text") {
+                  insertVariableField(editor, block, field, {
+                    replaceMention: true,
+                  });
+                }
+              }}
+            >
+              <span>{field.label}</span>
+              <small>{field.sample || field.value}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -3065,144 +3624,224 @@ export default function OrderPrinterDashboard() {
 
         {activeAppTab === "operations" ? (
           <aside className="app-sidebar">
-          <div className="operations-tabs">
-            {(
-              [
-                ["rule", "Automation rule"],
-                ["agent", "Print agent"],
-                ["jobs", "Recent jobs"],
-              ] as const
-            ).map(([tab, label]) => (
-              <button
-                aria-pressed={activeOperationsTab === tab}
-                className={activeOperationsTab === tab ? "active" : ""}
-                key={tab}
-                type="button"
-                onClick={() => setActiveOperationsTab(tab)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {activeOperationsTab === "rule" ? (
-            <section className="app-card">
-            <div className="app-card-header">Automation rule</div>
-            <Form method="post" className="settings-form">
-              <input type="hidden" name="intent" value="save-rule" />
-              <label>
-                <span>Fulfillment location</span>
-                <select name="locationId" defaultValue={defaultLocationId}>
-                  {data.locations.map((location) => (
-                    <option key={location.id} value={location.id}>
-                      {location.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Printer</span>
-                <select name="printerName" defaultValue={defaultPrinterName}>
-                  {data.printers.map((printer) => (
-                    <option key={printer.name} value={printer.name}>
-                      {printer.name}
-                      {printer.isDefault ? " (default)" : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="checkbox-row">
-                <input
-                  type="checkbox"
-                  name="enabled"
-                  defaultChecked={data.rule?.enabled ?? true}
-                />
-                <span>Print new orders for this location</span>
-              </label>
-              <button type="submit" disabled={!canSave || saving}>
-                Save settings
-              </button>
-            </Form>
-            {!data.printers.length ? (
-              <p className="empty-state">
-                No printers have checked in yet. Start the local print agent,
-                then reload this page.
-              </p>
-            ) : null}
-          </section>
-          ) : null}
-
-          {activeOperationsTab === "agent" ? (
-            <section className="app-card">
-            <div className="app-card-header">Print agent</div>
-            <div className="agent-grid">
-              <div>
-                <div className="field-label">Agent token</div>
-                <code className="token">{data.agentToken}</code>
-              </div>
-              <Form method="post">
-                <input type="hidden" name="intent" value="rotate-token" />
-                <button type="submit" disabled={saving}>
-                  Rotate token
+            <div className="operations-tabs">
+              {(
+                [
+                  ["rule", "Automation rule"],
+                  ["agent", "Print agent"],
+                  ["jobs", "Recent jobs"],
+                ] as const
+              ).map(([tab, label]) => (
+                <button
+                  aria-pressed={activeOperationsTab === tab}
+                  className={activeOperationsTab === tab ? "active" : ""}
+                  key={tab}
+                  type="button"
+                  onClick={() => setActiveOperationsTab(tab)}
+                >
+                  {label}
                 </button>
-              </Form>
-            </div>
-            <div className="field-label">Agent config</div>
-            <pre className="command">{agentConfig}</pre>
-            <div className="printer-list">
-              {data.printers.map((printer) => (
-                <div className="printer-row" key={printer.name}>
-                  <strong>{printer.name}</strong>
-                  <span>{printer.agentName || "local agent"}</span>
-                  <span>Last seen {formatDate(printer.lastSeenAt)}</span>
-                </div>
               ))}
             </div>
 
-            <div className="reprint-panel">
-              <Form method="get" className="inline-action">
-                <input type="hidden" name="reprint" value="1" />
-                <button type="submit" disabled={saving || !data.rule?.enabled}>
-                  Reprint Packing Slip
-                </button>
-              </Form>
-              {data.showReprintOrders ? (
-                data.reprintOrders.length ? (
-                  <div className="job-table-wrap compact-reprint-table">
+            {activeOperationsTab === "rule" ? (
+              <section className="app-card">
+                <div className="app-card-header">Automation rule</div>
+                <Form method="post" className="settings-form">
+                  <input type="hidden" name="intent" value="save-rule" />
+                  <label>
+                    <span>Fulfillment location</span>
+                    <select name="locationId" defaultValue={defaultLocationId}>
+                      {data.locations.map((location) => (
+                        <option key={location.id} value={location.id}>
+                          {location.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Printer</span>
+                    <select
+                      name="printerName"
+                      defaultValue={defaultPrinterName}
+                    >
+                      {data.printers.map((printer) => (
+                        <option key={printer.name} value={printer.name}>
+                          {printer.name}
+                          {printer.isDefault ? " (default)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      name="enabled"
+                      defaultChecked={data.rule?.enabled ?? true}
+                    />
+                    <span>Print new orders for this location</span>
+                  </label>
+                  <button type="submit" disabled={!canSave || saving}>
+                    Save settings
+                  </button>
+                </Form>
+                {!data.printers.length ? (
+                  <p className="empty-state">
+                    No printers have checked in yet. Start the local print
+                    agent, then reload this page.
+                  </p>
+                ) : null}
+              </section>
+            ) : null}
+
+            {activeOperationsTab === "agent" ? (
+              <section className="app-card">
+                <div className="app-card-header">Print agent</div>
+                <div className="agent-grid">
+                  <div>
+                    <div className="field-label">Agent token</div>
+                    <code className="token">{data.agentToken}</code>
+                  </div>
+                  <Form method="post">
+                    <input type="hidden" name="intent" value="rotate-token" />
+                    <button type="submit" disabled={saving}>
+                      Rotate token
+                    </button>
+                  </Form>
+                </div>
+                <div className="field-label">Agent config</div>
+                <pre className="command">{agentConfig}</pre>
+                <div className="printer-list">
+                  {data.printers.map((printer) => (
+                    <div className="printer-row" key={printer.name}>
+                      <strong>{printer.name}</strong>
+                      <span>{printer.agentName || "local agent"}</span>
+                      <span>Last seen {formatDate(printer.lastSeenAt)}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="reprint-panel">
+                  <Form method="get" className="inline-action">
+                    <input type="hidden" name="reprint" value="1" />
+                    <button
+                      type="submit"
+                      disabled={saving || !data.rule?.enabled}
+                    >
+                      Reprint Packing Slip
+                    </button>
+                  </Form>
+                  {data.showReprintOrders ? (
+                    data.reprintOrders.length ? (
+                      <div className="job-table-wrap compact-reprint-table">
+                        <table className="job-table">
+                          <thead>
+                            <tr>
+                              <th>Order</th>
+                              <th>Ship to</th>
+                              <th>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {data.reprintOrders.map((order) => (
+                              <tr key={order.id}>
+                                <td>
+                                  <strong>{order.name}</strong>
+                                  <span className="job-error">
+                                    {order.fulfillmentOrderCount} open here
+                                  </span>
+                                </td>
+                                <td>{order.shipTo}</td>
+                                <td>
+                                  <Form method="post">
+                                    <input
+                                      type="hidden"
+                                      name="intent"
+                                      value="manual-reprint-order"
+                                    />
+                                    <input
+                                      type="hidden"
+                                      name="orderId"
+                                      value={order.id}
+                                    />
+                                    <button type="submit" disabled={saving}>
+                                      Print
+                                    </button>
+                                  </Form>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="empty-state">
+                        No unfulfilled orders are currently assigned to this
+                        location.
+                      </p>
+                    )
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
+
+            {activeOperationsTab === "jobs" ? (
+              <section className="app-card">
+                <div className="app-card-header">Recent print jobs</div>
+                {data.jobs.length ? (
+                  <div className="job-table-wrap">
                     <table className="job-table">
                       <thead>
                         <tr>
                           <th>Order</th>
-                          <th>Ship to</th>
+                          <th>Location</th>
+                          <th>Printer</th>
+                          <th>Status</th>
+                          <th>Created</th>
                           <th>Action</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {data.reprintOrders.map((order) => (
-                          <tr key={order.id}>
+                        {data.jobs.map((job) => (
+                          <tr key={job.id}>
                             <td>
-                              <strong>{order.name}</strong>
-                              <span className="job-error">
-                                {order.fulfillmentOrderCount} open here
+                              <strong>{job.orderName}</strong>
+                              {job.lastError ? (
+                                <span className="job-error">
+                                  {job.lastError}
+                                </span>
+                              ) : null}
+                            </td>
+                            <td>{job.locationName}</td>
+                            <td>{job.printerName}</td>
+                            <td>
+                              <span
+                                className={`status ${job.status.toLowerCase()}`}
+                              >
+                                {job.status}
                               </span>
                             </td>
-                            <td>{order.shipTo}</td>
+                            <td>{formatDate(job.createdAt)}</td>
                             <td>
-                              <Form method="post">
-                                <input
-                                  type="hidden"
-                                  name="intent"
-                                  value="manual-reprint-order"
-                                />
-                                <input
-                                  type="hidden"
-                                  name="orderId"
-                                  value={order.id}
-                                />
-                                <button type="submit" disabled={saving}>
-                                  Print
-                                </button>
-                              </Form>
+                              {job.status === "FAILED" ? (
+                                <Form method="post">
+                                  <input
+                                    type="hidden"
+                                    name="intent"
+                                    value="retry-job"
+                                  />
+                                  <input
+                                    type="hidden"
+                                    name="jobId"
+                                    value={job.id}
+                                  />
+                                  <button type="submit" disabled={saving}>
+                                    Retry
+                                  </button>
+                                </Form>
+                              ) : (
+                                "-"
+                              )}
                             </td>
                           </tr>
                         ))}
@@ -3211,93 +3850,23 @@ export default function OrderPrinterDashboard() {
                   </div>
                 ) : (
                   <p className="empty-state">
-                    No unfulfilled orders are currently assigned to this
-                    location.
+                    No print jobs have been queued yet.
                   </p>
-                )
-              ) : null}
-            </div>
-          </section>
-          ) : null}
-
-          {activeOperationsTab === "jobs" ? (
-            <section className="app-card">
-            <div className="app-card-header">Recent print jobs</div>
-            {data.jobs.length ? (
-              <div className="job-table-wrap">
-                <table className="job-table">
-                  <thead>
-                    <tr>
-                      <th>Order</th>
-                      <th>Location</th>
-                      <th>Printer</th>
-                      <th>Status</th>
-                      <th>Created</th>
-                      <th>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.jobs.map((job) => (
-                      <tr key={job.id}>
-                        <td>
-                          <strong>{job.orderName}</strong>
-                          {job.lastError ? (
-                            <span className="job-error">{job.lastError}</span>
-                          ) : null}
-                        </td>
-                        <td>{job.locationName}</td>
-                        <td>{job.printerName}</td>
-                        <td>
-                          <span
-                            className={`status ${job.status.toLowerCase()}`}
-                          >
-                            {job.status}
-                          </span>
-                        </td>
-                        <td>{formatDate(job.createdAt)}</td>
-                        <td>
-                          {job.status === "FAILED" ? (
-                            <Form method="post">
-                              <input
-                                type="hidden"
-                                name="intent"
-                                value="retry-job"
-                              />
-                              <input
-                                type="hidden"
-                                name="jobId"
-                                value={job.id}
-                              />
-                              <button type="submit" disabled={saving}>
-                                Retry
-                              </button>
-                            </Form>
-                          ) : (
-                            "-"
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="empty-state">No print jobs have been queued yet.</p>
-            )}
-          </section>
-          ) : null}
+                )}
+              </section>
+            ) : null}
           </aside>
         ) : null}
 
         {activeAppTab === "template" ? (
           <section className="template-app-panel">
-          <TemplateDesigner
-            canSaveTemplate={Boolean(data.rule)}
-            template={data.template}
-            templates={data.templates}
-            saving={saving}
-          />
-        </section>
+            <TemplateDesigner
+              canSaveTemplate={Boolean(data.rule)}
+              template={data.template}
+              templates={data.templates}
+              saving={saving}
+            />
+          </section>
         ) : null}
       </div>
     </main>
