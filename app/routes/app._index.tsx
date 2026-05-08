@@ -1425,6 +1425,7 @@ function TemplateDesigner({
     null,
   );
   const [mentionMenu, setMentionMenu] = useState<MentionMenuState | null>(null);
+  const [pageSetupOpen, setPageSetupOpen] = useState(false);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const inlineTextRef = useRef<HTMLDivElement | null>(null);
   const inspectorTextRef = useRef<HTMLDivElement | null>(null);
@@ -1820,6 +1821,7 @@ function TemplateDesigner({
     const target = event.target as HTMLElement;
 
     if (
+      !(event.metaKey || event.ctrlKey) ||
       target.closest(
         "button, input, select, textarea, [contenteditable='true']",
       ) ||
@@ -1873,10 +1875,6 @@ function TemplateDesigner({
   }
 
   function insertFieldToken() {
-    if (!selectedBlock || selectedBlock.type !== "text") {
-      return;
-    }
-
     const field = fieldFor(tokenField);
 
     if (!field) {
@@ -1884,11 +1882,19 @@ function TemplateDesigner({
     }
 
     const activeEditor = activeRichEditorRef.current;
+    const activeBlock = activeEditor
+      ? design.blocks.find((block) => block.id === activeEditor.dataset.blockId)
+      : null;
 
-    if (activeEditor?.dataset.blockId === selectedBlock.id) {
-      insertVariableField(activeEditor, selectedBlock, field, {
+    if (activeEditor?.isConnected && activeBlock?.type === "text") {
+      insertVariableField(activeEditor, activeBlock, field, {
         replaceMention: false,
       });
+      return;
+    }
+
+    if (!selectedBlock || selectedBlock.type !== "text") {
+      addBlock("field", field.value);
       return;
     }
 
@@ -2151,10 +2157,46 @@ function TemplateDesigner({
     style: Partial<CSSStyleDeclaration>,
     fallback = "",
   ) {
-    const block = selectedBlock;
-    const editor = activeRichEditorRef.current || inspectorTextRef.current;
+    const editor = activeRichEditorRef.current?.isConnected
+      ? activeRichEditorRef.current
+      : null;
+    const block =
+      (editor
+        ? design.blocks.find((item) => item.id === editor.dataset.blockId)
+        : selectedBlock) || null;
 
-    if (!block || block.type !== "text" || !editor) {
+    if (!block || block.type !== "text") {
+      return;
+    }
+
+    if (!editor) {
+      const patch: Partial<TemplateBlock> = {};
+
+      if (style.fontFamily) {
+        patch.fontFamily = style.fontFamily;
+      }
+
+      if (style.fontSize) {
+        patch.fontSize = Number.parseInt(style.fontSize, 10);
+      }
+
+      if (style.fontWeight) {
+        patch.fontWeight = style.fontWeight === "700" ? "700" : "400";
+      }
+
+      if (style.fontStyle) {
+        patch.italic = style.fontStyle === "italic";
+      }
+
+      if (style.textDecoration) {
+        patch.underline = style.textDecoration === "underline";
+      }
+
+      if (style.color) {
+        patch.color = style.color;
+      }
+
+      updateBlock(block.id, patch);
       return;
     }
 
@@ -2435,8 +2477,8 @@ function TemplateDesigner({
           name="templateDesign"
           value={JSON.stringify(design)}
         />
-        <div className="template-topbar">
-          <label>
+        <div className="word-titlebar">
+          <label className="word-template-select">
             <span>Template name</span>
             <select
               name="templateName"
@@ -2450,7 +2492,7 @@ function TemplateDesigner({
               ))}
             </select>
           </label>
-          <div className="template-topbar-actions">
+          <div className="word-title-actions">
             <span className={dirty ? "template-state dirty" : "template-state"}>
               {dirty ? "Unsaved" : "Saved"}
             </span>
@@ -2488,1042 +2530,1153 @@ function TemplateDesigner({
           </div>
         </div>
 
-        <div className="page-settings">
+        <div className="word-menubar">
+          <button type="button" onClick={() => setPageSetupOpen(true)}>
+            Page setup
+          </button>
+          <button type="button" onClick={undoDesignChange}>
+            Undo
+          </button>
+          <button type="button" onClick={redoDesignChange}>
+            Redo
+          </button>
+          <button type="button" onClick={() => addBlock("text")}>
+            Text box
+          </button>
+          <button type="button" onClick={() => addBlock("image", "")}>
+            Image
+          </button>
+          <button
+            type="button"
+            onClick={() => addBlock("image", "items.firstImage")}
+          >
+            Product image
+          </button>
+          <button type="button" onClick={() => addBlock("items")}>
+            Items table
+          </button>
+        </div>
+
+        <div className="word-formatbar">
           <label>
-            <span>Page size</span>
+            <span>Font</span>
             <select
-              value={design.page.size || "custom"}
-              onChange={(event) => applyPageSize(event.currentTarget.value)}
+              value={selectedBlock?.fontFamily || FONT_FAMILIES[0].value}
+              onChange={(event) =>
+                applyRichTextFontFamily(event.currentTarget.value)
+              }
             >
-              {PAGE_SIZE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
+              {FONT_FAMILIES.map((font) => (
+                <option key={font.value} value={font.value}>
+                  {font.label}
                 </option>
               ))}
             </select>
           </label>
-          <label>
-            <span>Width</span>
-            <input
-              min="288"
-              type="number"
-              value={design.page.width}
+          <label className="word-size-control">
+            <span>Size</span>
+            <select
+              value={String(selectedBlock?.fontSize || 12)}
               onChange={(event) =>
-                updatePage({
-                  size: "custom",
-                  width: Number(event.currentTarget.value),
-                })
+                applyRichTextFontSize(event.currentTarget.value)
+              }
+            >
+              {[8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48].map(
+                (size) => (
+                  <option key={size} value={size}>
+                    {size}
+                  </option>
+                ),
+              )}
+            </select>
+          </label>
+          <span className="word-button-group">
+            <button
+              type="button"
+              title="Bold"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => applyRichTextCommand("bold")}
+            >
+              <strong>B</strong>
+            </button>
+            <button
+              type="button"
+              title="Italic"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => applyRichTextCommand("italic")}
+            >
+              <em>I</em>
+            </button>
+            <button
+              type="button"
+              title="Underline"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => applyRichTextCommand("underline")}
+            >
+              <span className="underline-icon">U</span>
+            </button>
+          </span>
+          <label className="word-color-control">
+            <span>Color</span>
+            <input
+              type="color"
+              value={normalizeHex(selectedBlock?.color, "#111827")}
+              onChange={(event) =>
+                wrapRichSelection({ color: event.currentTarget.value })
               }
             />
           </label>
-          <label>
-            <span>Height</span>
-            <input
-              min="288"
-              type="number"
-              value={design.page.height}
-              onChange={(event) =>
-                updatePage({
-                  size: "custom",
-                  height: Number(event.currentTarget.value),
-                })
-              }
-            />
-          </label>
-          {(
-            ["marginTop", "marginRight", "marginBottom", "marginLeft"] as const
-          ).map((key) => (
-            <label key={key}>
-              <span>{key.replace("margin", "")}</span>
-              <input
-                min="0"
-                type="number"
-                value={design.page[key] || 0}
-                onChange={(event) =>
-                  updatePage({ [key]: Number(event.currentTarget.value) })
+          <span className="word-button-group">
+            {(["left", "center", "right"] as const).map((align) => (
+              <button
+                key={align}
+                type="button"
+                disabled={!selectedBlock}
+                className={selectedBlock?.align === align ? "active" : ""}
+                onClick={() =>
+                  selectedBlock &&
+                  updateBlock(selectedBlock.id, {
+                    align,
+                  })
                 }
-              />
-            </label>
-          ))}
+              >
+                {align === "left" ? "L" : align === "center" ? "C" : "R"}
+              </button>
+            ))}
+          </span>
+          <label className="word-field-control">
+            <span>Fields</span>
+            <select
+              value={tokenField}
+              onChange={(event) => setTokenField(event.currentTarget.value)}
+            >
+              {TEMPLATE_FIELD_GROUPS.map((group) => (
+                <optgroup key={group.label} label={group.label}>
+                  {group.fields.map((field) => (
+                    <option key={field.value} value={field.value}>
+                      {field.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+          <button type="button" onClick={insertFieldToken}>
+            Insert field
+          </button>
+          <span className="word-button-group">
+            <button
+              type="button"
+              disabled={!selectedBlock}
+              onClick={duplicateSelectedBlock}
+            >
+              Duplicate
+            </button>
+            <button
+              type="button"
+              disabled={selectedIndex <= 0}
+              onClick={() => moveLayer(-1)}
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              disabled={
+                selectedIndex < 0 || selectedIndex >= design.blocks.length - 1
+              }
+              onClick={() => moveLayer(1)}
+            >
+              Forward
+            </button>
+            <button
+              type="button"
+              className="danger-button"
+              disabled={!selectedBlock}
+              onClick={removeSelectedBlock}
+            >
+              Delete
+            </button>
+          </span>
+          <label className="word-zoom-control">
+            <span>Zoom</span>
+            <select
+              value={zoom}
+              onChange={(event) =>
+                setZoom(normalizeZoom(Number(event.currentTarget.value)))
+              }
+            >
+              <option value={0.5}>50%</option>
+              <option value={0.6}>60%</option>
+              <option value={0.65}>65%</option>
+              <option value={0.75}>75%</option>
+              <option value={0.9}>90%</option>
+              <option value={1}>100%</option>
+              <option value={1.2}>120%</option>
+            </select>
+          </label>
+          <label className="word-checkbox">
+            <input
+              type="checkbox"
+              checked={snapToGrid}
+              onChange={(event) => setSnapToGrid(event.currentTarget.checked)}
+            />
+            <span>Snap</span>
+          </label>
         </div>
 
         <div className="template-workspace">
-          <aside className="template-sidebar">
-            <div className="template-panel">
-              <h3>Add block</h3>
-              <div className="template-button-grid">
-                <button type="button" onClick={() => addBlock("text")}>
-                  <span aria-hidden="true">T</span> Text
-                </button>
-                <button type="button" onClick={() => addBlock("image", "")}>
-                  <span aria-hidden="true">▧</span> Image
-                </button>
-                <button
-                  type="button"
-                  onClick={() => addBlock("image", "items.firstImage")}
-                >
-                  <span aria-hidden="true">▣</span> Product image
-                </button>
-                <button type="button" onClick={() => addBlock("items")}>
-                  <span aria-hidden="true">▦</span> Items table
-                </button>
-              </div>
-            </div>
-
-            <div className="template-panel">
-              <h3>Fields</h3>
-              <div className="field-list">
-                {TEMPLATE_FIELD_GROUPS.map((group) => (
-                  <div className="field-group" key={group.label}>
-                    <strong>{group.label}</strong>
-                    {group.fields.map((field) => (
-                      <button
-                        key={field.value}
-                        type="button"
-                        onClick={() => addBlock("field", field.value)}
-                      >
-                        {field.label}
-                      </button>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="template-panel">
-              <h3>Layers</h3>
-              <div className="template-layer-list">
-                {[...design.blocks].reverse().map((block) => (
-                  <button
-                    className={block.id === selectedId ? "selected" : ""}
-                    key={block.id}
-                    type="button"
-                    onClick={() => setSelectedId(block.id)}
-                  >
-                    <span>{blockLabel(block)}</span>
-                    <small>{blockTypeLabel(block)}</small>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </aside>
-
           <div className="template-stage-column">
-            <div className="template-toolbar">
-              <label>
-                <span>Zoom</span>
-                <select
-                  value={zoom}
-                  onChange={(event) =>
-                    setZoom(normalizeZoom(Number(event.currentTarget.value)))
-                  }
-                >
-                  <option value={0.5}>50%</option>
-                  <option value={0.6}>60%</option>
-                  <option value={0.65}>65%</option>
-                  <option value={0.75}>75%</option>
-                  <option value={0.9}>90%</option>
-                  <option value={1}>100%</option>
-                </select>
-              </label>
-              <label className="checkbox-row compact-checkbox">
-                <input
-                  type="checkbox"
-                  checked={snapToGrid}
-                  onChange={(event) =>
-                    setSnapToGrid(event.currentTarget.checked)
-                  }
-                />
-                <span>Snap</span>
-              </label>
-              <button
-                type="button"
-                disabled={!selectedBlock}
-                onClick={duplicateSelectedBlock}
-              >
-                <span aria-hidden="true">⧉</span> Duplicate
-              </button>
-              <button
-                type="button"
-                disabled={selectedIndex <= 0}
-                onClick={() => moveLayer(-1)}
-              >
-                <span aria-hidden="true">‹</span> Back
-              </button>
-              <button
-                type="button"
-                disabled={
-                  selectedIndex < 0 || selectedIndex >= design.blocks.length - 1
-                }
-                onClick={() => moveLayer(1)}
-              >
-                <span aria-hidden="true">›</span> Forward
-              </button>
-              <button
-                type="button"
-                className="danger-button"
-                disabled={!selectedBlock}
-                onClick={removeSelectedBlock}
-              >
-                <span aria-hidden="true">×</span> Delete
-              </button>
-            </div>
+            <div className="word-workspace">
+              <div className="word-ruler-corner" />
+              <div className="word-ruler-horizontal" />
+              <div className="word-ruler-vertical" />
 
-            <div className="template-stage" onWheel={handleStageWheel}>
-              <div
-                className="template-canvas-space"
-                style={{
-                  width: design.page.width * zoom,
-                  height: design.page.height * zoom,
-                }}
-              >
+              <div className="template-stage" onWheel={handleStageWheel}>
                 <div
-                  className="template-canvas"
-                  onPointerCancel={stopCanvasOperation}
-                  onPointerMove={updateCanvasOperation}
-                  onPointerUp={stopCanvasOperation}
-                  ref={canvasRef}
+                  className="template-canvas-space"
                   style={{
-                    height: design.page.height,
-                    transform: `scale(${zoom})`,
-                    width: design.page.width,
+                    width: design.page.width * zoom,
+                    height: design.page.height * zoom,
                   }}
                 >
                   <div
-                    className="margin-guide"
+                    className="template-canvas"
+                    onPointerCancel={stopCanvasOperation}
+                    onPointerMove={updateCanvasOperation}
+                    onPointerUp={stopCanvasOperation}
+                    ref={canvasRef}
                     style={{
-                      bottom: design.page.marginBottom || 0,
-                      left: design.page.marginLeft || 0,
-                      right: design.page.marginRight || 0,
-                      top: design.page.marginTop || 0,
+                      height: design.page.height,
+                      transform: `scale(${zoom})`,
+                      width: design.page.width,
                     }}
-                  />
-                  {design.blocks.map((block) => {
-                    const selected = block.id === selectedId;
-                    const editingText =
-                      block.type === "text" && editingTextBlockId === block.id;
-                    const editingItems =
-                      block.type === "items" &&
-                      editingItemsBlockId === block.id;
+                  >
+                    <div
+                      className="margin-guide"
+                      style={{
+                        bottom: design.page.marginBottom || 0,
+                        left: design.page.marginLeft || 0,
+                        right: design.page.marginRight || 0,
+                        top: design.page.marginTop || 0,
+                      }}
+                    />
+                    {design.blocks.map((block) => {
+                      const selected = block.id === selectedId;
+                      const editingText =
+                        block.type === "text" &&
+                        editingTextBlockId === block.id;
+                      const editingItems =
+                        block.type === "items" &&
+                        editingItemsBlockId === block.id;
 
-                    return (
-                      <div
-                        className={`template-block-preview ${
-                          selected ? "selected" : ""
-                        }`}
-                        key={block.id}
-                        onKeyDown={handleBlockKeyDown}
-                        onDoubleClick={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          openCanvasEditor(block);
-                        }}
-                        onPointerDown={(event) => startMove(event, block)}
-                        role="button"
-                        style={previewStyle(block)}
-                        tabIndex={0}
-                      >
-                        {editingText ? (
-                          <RichTextBox
-                            block={block}
-                            className="template-inline-textarea"
-                            editorRef={(element) => {
-                              inlineTextRef.current = element;
-                            }}
-                            onBlur={(element) => {
-                              if (activeRichEditorRef.current === element) {
-                                activeRichEditorRef.current = null;
-                              }
-
-                              setMentionMenu(null);
-                              setEditingTextBlockId(null);
-                            }}
-                            onFocus={(element) => {
-                              activeRichEditorRef.current = element;
-                              rememberRichSelection(element);
-                            }}
-                            onInput={handleRichTextInput}
-                            onKeyDown={handleRichTextKeyDown}
-                            onSelectionChange={rememberRichSelection}
-                            style={richTextEditorStyle(block)}
-                          />
-                        ) : editingItems ? (
-                          <div className="template-inline-table-editor">
-                            <div className="inline-editor-heading">
-                              Item table columns
-                              <button
-                                type="button"
-                                onClick={() => setEditingItemsBlockId(null)}
-                              >
-                                Done
-                              </button>
-                            </div>
-                            {normalizeItemColumns(block.itemColumns).map(
-                              (column, index, columns) => (
-                                <div
-                                  className="inline-table-column-row"
-                                  key={column.key}
+                      return (
+                        <div
+                          className={`template-block-preview ${
+                            selected ? "selected" : ""
+                          }`}
+                          key={block.id}
+                          onKeyDown={handleBlockKeyDown}
+                          onDoubleClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            openCanvasEditor(block);
+                          }}
+                          onPointerDown={(event) => startMove(event, block)}
+                          role="button"
+                          style={previewStyle(block)}
+                          tabIndex={0}
+                        >
+                          {editingText ? (
+                            <RichTextBox
+                              block={block}
+                              className="template-inline-textarea"
+                              editorRef={(element) => {
+                                inlineTextRef.current = element;
+                              }}
+                              onBlur={undefined}
+                              onFocus={(element) => {
+                                activeRichEditorRef.current = element;
+                                rememberRichSelection(element);
+                              }}
+                              onInput={handleRichTextInput}
+                              onKeyDown={handleRichTextKeyDown}
+                              onSelectionChange={rememberRichSelection}
+                              style={richTextEditorStyle(block)}
+                            />
+                          ) : editingItems ? (
+                            <div className="template-inline-table-editor">
+                              <div className="inline-editor-heading">
+                                Item table columns
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingItemsBlockId(null)}
                                 >
-                                  <label className="checkbox-row compact-checkbox">
+                                  Done
+                                </button>
+                              </div>
+                              {normalizeItemColumns(block.itemColumns).map(
+                                (column, index, columns) => (
+                                  <div
+                                    className="inline-table-column-row"
+                                    key={column.key}
+                                  >
+                                    <label className="checkbox-row compact-checkbox">
+                                      <input
+                                        type="checkbox"
+                                        checked={column.enabled}
+                                        onKeyDown={(event) =>
+                                          event.stopPropagation()
+                                        }
+                                        onChange={(event) =>
+                                          toggleItemColumnInBlock(
+                                            block,
+                                            column.key,
+                                            event.currentTarget.checked,
+                                          )
+                                        }
+                                      />
+                                      <span>{column.key}</span>
+                                    </label>
                                     <input
-                                      type="checkbox"
-                                      checked={column.enabled}
+                                      aria-label={`${column.key} label`}
+                                      value={column.label}
                                       onKeyDown={(event) =>
                                         event.stopPropagation()
                                       }
                                       onChange={(event) =>
-                                        toggleItemColumnInBlock(
+                                        updateItemColumnInBlock(
                                           block,
                                           column.key,
-                                          event.currentTarget.checked,
+                                          {
+                                            label: event.currentTarget.value,
+                                          },
                                         )
                                       }
                                     />
-                                    <span>{column.key}</span>
-                                  </label>
-                                  <input
-                                    aria-label={`${column.key} label`}
-                                    value={column.label}
-                                    onKeyDown={(event) =>
-                                      event.stopPropagation()
-                                    }
-                                    onChange={(event) =>
-                                      updateItemColumnInBlock(
-                                        block,
-                                        column.key,
-                                        {
-                                          label: event.currentTarget.value,
-                                        },
-                                      )
-                                    }
-                                  />
-                                  <input
-                                    aria-label={`${column.key} width`}
-                                    min="32"
-                                    type="number"
-                                    value={column.width}
-                                    onKeyDown={(event) =>
-                                      event.stopPropagation()
-                                    }
-                                    onChange={(event) =>
-                                      updateItemColumnInBlock(
-                                        block,
-                                        column.key,
-                                        {
-                                          width: Number(
-                                            event.currentTarget.value,
-                                          ),
-                                        },
-                                      )
-                                    }
-                                  />
-                                  <button
-                                    type="button"
-                                    disabled={index === 0}
-                                    onClick={() =>
-                                      moveItemColumnInBlock(
-                                        block,
-                                        column.key,
-                                        -1,
-                                      )
-                                    }
-                                  >
-                                    Up
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={index === columns.length - 1}
-                                    onClick={() =>
-                                      moveItemColumnInBlock(
-                                        block,
-                                        column.key,
-                                        1,
-                                      )
-                                    }
-                                  >
-                                    Down
-                                  </button>
-                                </div>
-                              ),
-                            )}
-                          </div>
-                        ) : (
-                          <TemplateBlockPreview block={block} />
-                        )}
-                        {selected ? (
-                          <span
-                            className="canvas-move-handle"
-                            data-drag-handle="true"
-                            title="Drag to move"
-                          >
-                            <span aria-hidden="true">⋮⋮</span>
-                          </span>
-                        ) : null}
-                        {selected &&
-                        !editingText &&
-                        !editingItems &&
-                        (block.type === "text" || block.type === "items") ? (
-                          <button
-                            className="canvas-edit-button"
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              openCanvasEditor(block);
-                            }}
-                          >
-                            {block.type === "items"
-                              ? "Edit table"
-                              : "Edit text"}
-                          </button>
-                        ) : null}
-                        {selected && !editingText && !editingItems
-                          ? RESIZE_HANDLES.map((handle) => (
-                              <span
-                                className={`resize-handle ${handle}`}
-                                data-resize-handle={handle}
-                                key={handle}
-                                onPointerDown={(event) =>
-                                  startResize(event, block, handle)
-                                }
-                              />
-                            ))
-                          : null}
-                      </div>
-                    );
-                  })}
+                                    <input
+                                      aria-label={`${column.key} width`}
+                                      min="32"
+                                      type="number"
+                                      value={column.width}
+                                      onKeyDown={(event) =>
+                                        event.stopPropagation()
+                                      }
+                                      onChange={(event) =>
+                                        updateItemColumnInBlock(
+                                          block,
+                                          column.key,
+                                          {
+                                            width: Number(
+                                              event.currentTarget.value,
+                                            ),
+                                          },
+                                        )
+                                      }
+                                    />
+                                    <button
+                                      type="button"
+                                      disabled={index === 0}
+                                      onClick={() =>
+                                        moveItemColumnInBlock(
+                                          block,
+                                          column.key,
+                                          -1,
+                                        )
+                                      }
+                                    >
+                                      Up
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={index === columns.length - 1}
+                                      onClick={() =>
+                                        moveItemColumnInBlock(
+                                          block,
+                                          column.key,
+                                          1,
+                                        )
+                                      }
+                                    >
+                                      Down
+                                    </button>
+                                  </div>
+                                ),
+                              )}
+                            </div>
+                          ) : (
+                            <TemplateBlockPreview block={block} />
+                          )}
+                          {selected ? (
+                            <span
+                              className="canvas-move-handle"
+                              data-drag-handle="true"
+                              title="Drag to move"
+                            >
+                              <span aria-hidden="true">⋮⋮</span>
+                            </span>
+                          ) : null}
+                          {selected &&
+                          !editingText &&
+                          !editingItems &&
+                          (block.type === "text" || block.type === "items") ? (
+                            <button
+                              className="canvas-edit-button"
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openCanvasEditor(block);
+                              }}
+                            >
+                              {block.type === "items"
+                                ? "Edit table"
+                                : "Edit text"}
+                            </button>
+                          ) : null}
+                          {selected && !editingText && !editingItems
+                            ? RESIZE_HANDLES.map((handle) => (
+                                <span
+                                  className={`resize-handle ${handle}`}
+                                  data-resize-handle={handle}
+                                  key={handle}
+                                  onPointerDown={(event) =>
+                                    startResize(event, block, handle)
+                                  }
+                                />
+                              ))
+                            : null}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          <div className="template-inspector">
-            {selectedBlock ? (
-              <>
-                <div className="template-inspector-heading">
-                  <div>
-                    <div className="field-label">Selected block</div>
-                    <strong>{blockLabel(selectedBlock)}</strong>
-                  </div>
-                  <span>{blockTypeLabel(selectedBlock)}</span>
-                </div>
-                {selectedBlock.type === "field" ||
-                selectedBlock.type === "image" ? (
-                  <label>
-                    <span>Data field</span>
-                    <select
-                      value={selectedBlock.field || ""}
-                      onChange={(event) =>
-                        updateBlock(selectedBlock.id, {
-                          field: event.currentTarget.value,
-                          label:
-                            fieldFor(event.currentTarget.value)?.label ||
-                            selectedBlock.label,
-                        })
-                      }
-                    >
-                      {selectedBlock.type === "image" ? (
-                        <option value="">Custom image URL</option>
-                      ) : null}
-                      {(selectedBlock.type === "image"
-                        ? TEMPLATE_FIELDS.filter(
-                            (field) => field.value === "items.firstImage",
-                          )
-                        : TEMPLATE_FIELDS
-                      ).map((field) => (
-                        <option key={field.value} value={field.value}>
-                          {field.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
-                {selectedBlock.type === "text" ? (
-                  <div className="rich-text-panel">
-                    <span>Text</span>
-                    <div className="rich-text-toolbar">
-                      <button
-                        type="button"
-                        title="Bold selected text"
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => applyRichTextCommand("bold")}
-                      >
-                        <strong>B</strong>
-                      </button>
-                      <button
-                        type="button"
-                        title="Italic selected text"
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => applyRichTextCommand("italic")}
-                      >
-                        <em>I</em>
-                      </button>
-                      <button
-                        type="button"
-                        title="Underline selected text"
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => applyRichTextCommand("underline")}
-                      >
-                        <span className="underline-icon">U</span>
-                      </button>
-                      <label>
-                        <span>Font</span>
-                        <select
-                          defaultValue=""
-                          onChange={(event) => {
-                            if (event.currentTarget.value) {
-                              applyRichTextFontFamily(
-                                event.currentTarget.value,
-                              );
-                              event.currentTarget.value = "";
-                            }
-                          }}
-                        >
-                          <option value="">Font</option>
-                          {FONT_FAMILIES.map((font) => (
-                            <option key={font.value} value={font.value}>
-                              {font.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        <span>Color</span>
-                        <input
-                          type="color"
-                          defaultValue="#111827"
-                          onChange={(event) =>
-                            wrapRichSelection({
-                              color: event.currentTarget.value,
-                            })
-                          }
-                        />
-                      </label>
-                      <label>
-                        <span>Size</span>
-                        <select
-                          defaultValue=""
-                          onChange={(event) => {
-                            if (event.currentTarget.value) {
-                              applyRichTextFontSize(event.currentTarget.value);
-                              event.currentTarget.value = "";
-                            }
-                          }}
-                        >
-                          <option value="">Aa</option>
-                          <option value="10">10</option>
-                          <option value="12">12</option>
-                          <option value="14">14</option>
-                          <option value="16">16</option>
-                          <option value="18">18</option>
-                          <option value="22">22</option>
-                          <option value="28">28</option>
-                        </select>
-                      </label>
+            <div className="template-inspector">
+              {selectedBlock ? (
+                <>
+                  <div className="template-inspector-heading">
+                    <div>
+                      <div className="field-label">Selected block</div>
+                      <strong>{blockLabel(selectedBlock)}</strong>
                     </div>
-                    <RichTextBox
-                      block={selectedBlock}
-                      className="template-rich-textbox"
-                      editorRef={(element) => {
-                        inspectorTextRef.current = element;
-                      }}
-                      onFocus={(element) => {
-                        activeRichEditorRef.current = element;
-                        rememberRichSelection(element);
-                      }}
-                      onBlur={() => setMentionMenu(null)}
-                      onInput={handleRichTextInput}
-                      onKeyDown={handleRichTextKeyDown}
-                      onSelectionChange={rememberRichSelection}
-                      style={richTextEditorStyle(selectedBlock)}
-                    />
+                    <span>{blockTypeLabel(selectedBlock)}</span>
                   </div>
-                ) : null}
-                {selectedBlock.type === "text" ? (
-                  <div className="token-inserter">
-                    <select
-                      value={tokenField}
-                      onChange={(event) =>
-                        setTokenField(event.currentTarget.value)
-                      }
-                    >
-                      {TEMPLATE_FIELDS.map((field) => (
-                        <option key={field.value} value={field.value}>
-                          {field.label}
-                        </option>
-                      ))}
-                    </select>
-                    <button type="button" onClick={insertFieldToken}>
-                      Insert variable
-                    </button>
-                  </div>
-                ) : null}
-                {selectedBlock.type === "image" ? (
-                  <label>
-                    <span>Custom image URL</span>
-                    <input
-                      value={selectedBlock.imageUrl || ""}
-                      onChange={(event) =>
-                        updateBlock(selectedBlock.id, {
-                          imageUrl: event.currentTarget.value,
-                        })
-                      }
-                    />
-                  </label>
-                ) : null}
-                {selectedBlock.type === "items" ? (
-                  <div className="item-column-editor">
-                    <div className="field-label">Item columns</div>
-                    <div className="item-column-list">
-                      {selectedItemColumns.map((column, index, columns) => (
-                        <div
-                          className={
-                            selectedItemColumn?.key === column.key
-                              ? "item-column-pill selected"
-                              : "item-column-pill"
-                          }
-                          key={column.key}
+                  {selectedBlock.type === "field" ||
+                  selectedBlock.type === "image" ? (
+                    <label>
+                      <span>Data field</span>
+                      <select
+                        value={selectedBlock.field || ""}
+                        onChange={(event) =>
+                          updateBlock(selectedBlock.id, {
+                            field: event.currentTarget.value,
+                            label:
+                              fieldFor(event.currentTarget.value)?.label ||
+                              selectedBlock.label,
+                          })
+                        }
+                      >
+                        {selectedBlock.type === "image" ? (
+                          <option value="">Custom image URL</option>
+                        ) : null}
+                        {(selectedBlock.type === "image"
+                          ? TEMPLATE_FIELDS.filter(
+                              (field) => field.value === "items.firstImage",
+                            )
+                          : TEMPLATE_FIELDS
+                        ).map((field) => (
+                          <option key={field.value} value={field.value}>
+                            {field.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  {selectedBlock.type === "text" ? (
+                    <div className="rich-text-panel">
+                      <span>Text</span>
+                      <div className="rich-text-toolbar">
+                        <button
+                          type="button"
+                          title="Bold selected text"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => applyRichTextCommand("bold")}
                         >
-                          <input
-                            aria-label={`Show ${column.key}`}
-                            type="checkbox"
-                            checked={column.enabled}
-                            onChange={(event) =>
-                              toggleItemColumn(
-                                column.key,
-                                event.currentTarget.checked,
-                              )
-                            }
-                          />
-                          <button
-                            className="item-column-select"
-                            type="button"
-                            onClick={() => setSelectedItemColumnKey(column.key)}
-                          >
-                            <span>{column.label || column.key}</span>
-                            <small>{column.width}px</small>
-                          </button>
-                          <span className="item-column-actions">
-                            <button
-                              type="button"
-                              disabled={index === 0}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                moveItemColumn(column.key, -1);
-                              }}
-                            >
-                              ↑
-                            </button>
-                            <button
-                              type="button"
-                              disabled={index === columns.length - 1}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                moveItemColumn(column.key, 1);
-                              }}
-                            >
-                              ↓
-                            </button>
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-
-                    {selectedItemColumn ? (
-                      <div className="item-column-detail">
-                        <div className="field-label">
-                          Editing {selectedItemColumn.key}
-                        </div>
+                          <strong>B</strong>
+                        </button>
+                        <button
+                          type="button"
+                          title="Italic selected text"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => applyRichTextCommand("italic")}
+                        >
+                          <em>I</em>
+                        </button>
+                        <button
+                          type="button"
+                          title="Underline selected text"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => applyRichTextCommand("underline")}
+                        >
+                          <span className="underline-icon">U</span>
+                        </button>
                         <label>
-                          <span>Label</span>
+                          <span>Font</span>
+                          <select
+                            defaultValue=""
+                            onChange={(event) => {
+                              if (event.currentTarget.value) {
+                                applyRichTextFontFamily(
+                                  event.currentTarget.value,
+                                );
+                                event.currentTarget.value = "";
+                              }
+                            }}
+                          >
+                            <option value="">Font</option>
+                            {FONT_FAMILIES.map((font) => (
+                              <option key={font.value} value={font.value}>
+                                {font.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>Color</span>
                           <input
-                            value={selectedItemColumn.label}
+                            type="color"
+                            defaultValue="#111827"
                             onChange={(event) =>
-                              updateItemColumn(selectedItemColumn.key, {
-                                label: event.currentTarget.value,
+                              wrapRichSelection({
+                                color: event.currentTarget.value,
                               })
                             }
                           />
                         </label>
-                        <div className="geometry-grid">
-                          <label>
-                            <span>Width</span>
-                            <input
-                              min="32"
-                              type="number"
-                              value={selectedItemColumn.width}
-                              onChange={(event) =>
-                                updateItemColumn(selectedItemColumn.key, {
-                                  width: Number(event.currentTarget.value),
-                                })
+                        <label>
+                          <span>Size</span>
+                          <select
+                            defaultValue=""
+                            onChange={(event) => {
+                              if (event.currentTarget.value) {
+                                applyRichTextFontSize(
+                                  event.currentTarget.value,
+                                );
+                                event.currentTarget.value = "";
                               }
-                            />
-                          </label>
-                          <label>
-                            <span>Align</span>
-                            <select
-                              value={selectedItemColumn.align}
-                              onChange={(event) =>
-                                updateItemColumn(selectedItemColumn.key, {
-                                  align: event.currentTarget
-                                    .value as EditorItemColumn["align"],
-                                })
-                              }
-                            >
-                              <option value="left">Left</option>
-                              <option value="center">Center</option>
-                              <option value="right">Right</option>
-                            </select>
-                          </label>
-                        </div>
-                        <div className="item-style-grid">
-                          <div>
-                            <div className="field-label">Header text</div>
-                            <div className="style-grid">
-                              <label>
-                                <span>Size</span>
-                                <input
-                                  min="7"
-                                  type="number"
-                                  value={selectedItemColumn.labelFontSize}
-                                  onChange={(event) =>
-                                    updateItemColumn(selectedItemColumn.key, {
-                                      labelFontSize: Number(
-                                        event.currentTarget.value,
-                                      ),
-                                    })
-                                  }
-                                />
-                              </label>
-                              <label>
-                                <span>Color</span>
-                                <input
-                                  type="color"
-                                  value={selectedItemColumn.labelColor}
-                                  onChange={(event) =>
-                                    updateItemColumn(selectedItemColumn.key, {
-                                      labelColor: event.currentTarget.value,
-                                    })
-                                  }
-                                />
-                              </label>
-                            </div>
-                            <div className="format-button-row">
-                              <button
-                                aria-pressed={
-                                  selectedItemColumn.labelFontWeight === "700"
-                                }
-                                className={
-                                  selectedItemColumn.labelFontWeight === "700"
-                                    ? "active"
-                                    : ""
-                                }
-                                type="button"
-                                onClick={() =>
-                                  updateItemColumn(selectedItemColumn.key, {
-                                    labelFontWeight:
-                                      selectedItemColumn.labelFontWeight ===
-                                      "700"
-                                        ? "400"
-                                        : "700",
-                                  })
-                                }
-                              >
-                                B
-                              </button>
-                            </div>
-                          </div>
-
-                          <div>
-                            <div className="field-label">Row text</div>
-                            <div className="style-grid">
-                              <label>
-                                <span>Size</span>
-                                <input
-                                  min="7"
-                                  type="number"
-                                  value={selectedItemColumn.valueFontSize}
-                                  onChange={(event) =>
-                                    updateItemColumn(selectedItemColumn.key, {
-                                      valueFontSize: Number(
-                                        event.currentTarget.value,
-                                      ),
-                                    })
-                                  }
-                                />
-                              </label>
-                              <label>
-                                <span>Color</span>
-                                <input
-                                  type="color"
-                                  value={selectedItemColumn.valueColor}
-                                  onChange={(event) =>
-                                    updateItemColumn(selectedItemColumn.key, {
-                                      valueColor: event.currentTarget.value,
-                                    })
-                                  }
-                                />
-                              </label>
-                            </div>
-                            <div className="format-button-row">
-                              <button
-                                aria-pressed={
-                                  selectedItemColumn.valueFontWeight === "700"
-                                }
-                                className={
-                                  selectedItemColumn.valueFontWeight === "700"
-                                    ? "active"
-                                    : ""
-                                }
-                                type="button"
-                                onClick={() =>
-                                  updateItemColumn(selectedItemColumn.key, {
-                                    valueFontWeight:
-                                      selectedItemColumn.valueFontWeight ===
-                                      "700"
-                                        ? "400"
-                                        : "700",
-                                  })
-                                }
-                              >
-                                B
-                              </button>
-                            </div>
-                          </div>
-                        </div>
+                            }}
+                          >
+                            <option value="">Aa</option>
+                            <option value="10">10</option>
+                            <option value="12">12</option>
+                            <option value="14">14</option>
+                            <option value="16">16</option>
+                            <option value="18">18</option>
+                            <option value="22">22</option>
+                            <option value="28">28</option>
+                          </select>
+                        </label>
                       </div>
-                    ) : null}
-                  </div>
-                ) : null}
-                <div className="geometry-grid">
-                  {(["x", "y", "w", "h"] as const).map((key) => (
-                    <label key={key}>
-                      <span>{key}</span>
+                      <RichTextBox
+                        block={selectedBlock}
+                        className="template-rich-textbox"
+                        editorRef={(element) => {
+                          inspectorTextRef.current = element;
+                        }}
+                        onFocus={(element) => {
+                          activeRichEditorRef.current = element;
+                          rememberRichSelection(element);
+                        }}
+                        onBlur={() => setMentionMenu(null)}
+                        onInput={handleRichTextInput}
+                        onKeyDown={handleRichTextKeyDown}
+                        onSelectionChange={rememberRichSelection}
+                        style={richTextEditorStyle(selectedBlock)}
+                      />
+                    </div>
+                  ) : null}
+                  {selectedBlock.type === "text" ? (
+                    <div className="token-inserter">
+                      <select
+                        value={tokenField}
+                        onChange={(event) =>
+                          setTokenField(event.currentTarget.value)
+                        }
+                      >
+                        {TEMPLATE_FIELDS.map((field) => (
+                          <option key={field.value} value={field.value}>
+                            {field.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button type="button" onClick={insertFieldToken}>
+                        Insert variable
+                      </button>
+                    </div>
+                  ) : null}
+                  {selectedBlock.type === "image" ? (
+                    <label>
+                      <span>Custom image URL</span>
                       <input
-                        min="0"
-                        type="number"
-                        value={selectedBlock[key] || 0}
+                        value={selectedBlock.imageUrl || ""}
                         onChange={(event) =>
                           updateBlock(selectedBlock.id, {
-                            [key]: Number(event.currentTarget.value),
+                            imageUrl: event.currentTarget.value,
                           })
                         }
                       />
                     </label>
-                  ))}
-                </div>
-                <div className="typography-grid">
-                  <label className="wide-control">
-                    <span>Font</span>
-                    <select
-                      value={selectedBlock.fontFamily || FONT_FAMILIES[0].value}
-                      onChange={(event) =>
+                  ) : null}
+                  {selectedBlock.type === "items" ? (
+                    <div className="item-column-editor">
+                      <div className="field-label">Item columns</div>
+                      <div className="item-column-list">
+                        {selectedItemColumns.map((column, index, columns) => (
+                          <div
+                            className={
+                              selectedItemColumn?.key === column.key
+                                ? "item-column-pill selected"
+                                : "item-column-pill"
+                            }
+                            key={column.key}
+                          >
+                            <input
+                              aria-label={`Show ${column.key}`}
+                              type="checkbox"
+                              checked={column.enabled}
+                              onChange={(event) =>
+                                toggleItemColumn(
+                                  column.key,
+                                  event.currentTarget.checked,
+                                )
+                              }
+                            />
+                            <button
+                              className="item-column-select"
+                              type="button"
+                              onClick={() =>
+                                setSelectedItemColumnKey(column.key)
+                              }
+                            >
+                              <span>{column.label || column.key}</span>
+                              <small>{column.width}px</small>
+                            </button>
+                            <span className="item-column-actions">
+                              <button
+                                type="button"
+                                disabled={index === 0}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  moveItemColumn(column.key, -1);
+                                }}
+                              >
+                                ↑
+                              </button>
+                              <button
+                                type="button"
+                                disabled={index === columns.length - 1}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  moveItemColumn(column.key, 1);
+                                }}
+                              >
+                                ↓
+                              </button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {selectedItemColumn ? (
+                        <div className="item-column-detail">
+                          <div className="field-label">
+                            Editing {selectedItemColumn.key}
+                          </div>
+                          <label>
+                            <span>Label</span>
+                            <input
+                              value={selectedItemColumn.label}
+                              onChange={(event) =>
+                                updateItemColumn(selectedItemColumn.key, {
+                                  label: event.currentTarget.value,
+                                })
+                              }
+                            />
+                          </label>
+                          <div className="geometry-grid">
+                            <label>
+                              <span>Width</span>
+                              <input
+                                min="32"
+                                type="number"
+                                value={selectedItemColumn.width}
+                                onChange={(event) =>
+                                  updateItemColumn(selectedItemColumn.key, {
+                                    width: Number(event.currentTarget.value),
+                                  })
+                                }
+                              />
+                            </label>
+                            <label>
+                              <span>Align</span>
+                              <select
+                                value={selectedItemColumn.align}
+                                onChange={(event) =>
+                                  updateItemColumn(selectedItemColumn.key, {
+                                    align: event.currentTarget
+                                      .value as EditorItemColumn["align"],
+                                  })
+                                }
+                              >
+                                <option value="left">Left</option>
+                                <option value="center">Center</option>
+                                <option value="right">Right</option>
+                              </select>
+                            </label>
+                          </div>
+                          <div className="item-style-grid">
+                            <div>
+                              <div className="field-label">Header text</div>
+                              <div className="style-grid">
+                                <label>
+                                  <span>Size</span>
+                                  <input
+                                    min="7"
+                                    type="number"
+                                    value={selectedItemColumn.labelFontSize}
+                                    onChange={(event) =>
+                                      updateItemColumn(selectedItemColumn.key, {
+                                        labelFontSize: Number(
+                                          event.currentTarget.value,
+                                        ),
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label>
+                                  <span>Color</span>
+                                  <input
+                                    type="color"
+                                    value={selectedItemColumn.labelColor}
+                                    onChange={(event) =>
+                                      updateItemColumn(selectedItemColumn.key, {
+                                        labelColor: event.currentTarget.value,
+                                      })
+                                    }
+                                  />
+                                </label>
+                              </div>
+                              <div className="format-button-row">
+                                <button
+                                  aria-pressed={
+                                    selectedItemColumn.labelFontWeight === "700"
+                                  }
+                                  className={
+                                    selectedItemColumn.labelFontWeight === "700"
+                                      ? "active"
+                                      : ""
+                                  }
+                                  type="button"
+                                  onClick={() =>
+                                    updateItemColumn(selectedItemColumn.key, {
+                                      labelFontWeight:
+                                        selectedItemColumn.labelFontWeight ===
+                                        "700"
+                                          ? "400"
+                                          : "700",
+                                    })
+                                  }
+                                >
+                                  B
+                                </button>
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="field-label">Row text</div>
+                              <div className="style-grid">
+                                <label>
+                                  <span>Size</span>
+                                  <input
+                                    min="7"
+                                    type="number"
+                                    value={selectedItemColumn.valueFontSize}
+                                    onChange={(event) =>
+                                      updateItemColumn(selectedItemColumn.key, {
+                                        valueFontSize: Number(
+                                          event.currentTarget.value,
+                                        ),
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label>
+                                  <span>Color</span>
+                                  <input
+                                    type="color"
+                                    value={selectedItemColumn.valueColor}
+                                    onChange={(event) =>
+                                      updateItemColumn(selectedItemColumn.key, {
+                                        valueColor: event.currentTarget.value,
+                                      })
+                                    }
+                                  />
+                                </label>
+                              </div>
+                              <div className="format-button-row">
+                                <button
+                                  aria-pressed={
+                                    selectedItemColumn.valueFontWeight === "700"
+                                  }
+                                  className={
+                                    selectedItemColumn.valueFontWeight === "700"
+                                      ? "active"
+                                      : ""
+                                  }
+                                  type="button"
+                                  onClick={() =>
+                                    updateItemColumn(selectedItemColumn.key, {
+                                      valueFontWeight:
+                                        selectedItemColumn.valueFontWeight ===
+                                        "700"
+                                          ? "400"
+                                          : "700",
+                                    })
+                                  }
+                                >
+                                  B
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <div className="geometry-grid">
+                    {(["x", "y", "w", "h"] as const).map((key) => (
+                      <label key={key}>
+                        <span>{key}</span>
+                        <input
+                          min="0"
+                          type="number"
+                          value={selectedBlock[key] || 0}
+                          onChange={(event) =>
+                            updateBlock(selectedBlock.id, {
+                              [key]: Number(event.currentTarget.value),
+                            })
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <div className="typography-grid">
+                    <label className="wide-control">
+                      <span>Font</span>
+                      <select
+                        value={
+                          selectedBlock.fontFamily || FONT_FAMILIES[0].value
+                        }
+                        onChange={(event) =>
+                          updateBlock(selectedBlock.id, {
+                            fontFamily: event.currentTarget.value,
+                          })
+                        }
+                      >
+                        {FONT_FAMILIES.map((font) => (
+                          <option key={font.value} value={font.value}>
+                            {font.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Size</span>
+                      <input
+                        min="8"
+                        type="number"
+                        value={selectedBlock.fontSize || 12}
+                        onChange={(event) =>
+                          updateBlock(selectedBlock.id, {
+                            fontSize: Number(event.currentTarget.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Line</span>
+                      <input
+                        max="2.4"
+                        min="0.8"
+                        step="0.1"
+                        type="number"
+                        value={selectedBlock.lineHeight || 1.4}
+                        onChange={(event) =>
+                          updateBlock(selectedBlock.id, {
+                            lineHeight: Number(event.currentTarget.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Weight</span>
+                      <select
+                        value={selectedBlock.fontWeight || "400"}
+                        onChange={(event) =>
+                          updateBlock(selectedBlock.id, {
+                            fontWeight: event.currentTarget.value,
+                          })
+                        }
+                      >
+                        <option value="400">Regular</option>
+                        <option value="700">Bold</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Align</span>
+                      <select
+                        value={selectedBlock.align || "left"}
+                        onChange={(event) =>
+                          updateBlock(selectedBlock.id, {
+                            align: event.currentTarget
+                              .value as TemplateBlock["align"],
+                          })
+                        }
+                      >
+                        <option value="left">Left</option>
+                        <option value="center">Center</option>
+                        <option value="right">Right</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="format-button-row">
+                    <button
+                      aria-pressed={selectedBlock.fontWeight === "700"}
+                      className={
+                        selectedBlock.fontWeight === "700" ? "active" : ""
+                      }
+                      title="Bold"
+                      type="button"
+                      onClick={() =>
                         updateBlock(selectedBlock.id, {
-                          fontFamily: event.currentTarget.value,
+                          fontWeight:
+                            selectedBlock.fontWeight === "700" ? "400" : "700",
                         })
                       }
                     >
-                      {FONT_FAMILIES.map((font) => (
-                        <option key={font.value} value={font.value}>
-                          {font.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Size</span>
-                    <input
-                      min="8"
-                      type="number"
-                      value={selectedBlock.fontSize || 12}
-                      onChange={(event) =>
+                      B
+                    </button>
+                    <button
+                      aria-pressed={selectedBlock.italic === true}
+                      className={selectedBlock.italic ? "active" : ""}
+                      title="Italic"
+                      type="button"
+                      onClick={() =>
                         updateBlock(selectedBlock.id, {
-                          fontSize: Number(event.currentTarget.value),
-                        })
-                      }
-                    />
-                  </label>
-                  <label>
-                    <span>Line</span>
-                    <input
-                      max="2.4"
-                      min="0.8"
-                      step="0.1"
-                      type="number"
-                      value={selectedBlock.lineHeight || 1.4}
-                      onChange={(event) =>
-                        updateBlock(selectedBlock.id, {
-                          lineHeight: Number(event.currentTarget.value),
-                        })
-                      }
-                    />
-                  </label>
-                  <label>
-                    <span>Weight</span>
-                    <select
-                      value={selectedBlock.fontWeight || "400"}
-                      onChange={(event) =>
-                        updateBlock(selectedBlock.id, {
-                          fontWeight: event.currentTarget.value,
+                          italic: selectedBlock.italic !== true,
                         })
                       }
                     >
-                      <option value="400">Regular</option>
-                      <option value="700">Bold</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Align</span>
-                    <select
-                      value={selectedBlock.align || "left"}
-                      onChange={(event) =>
+                      I
+                    </button>
+                    <button
+                      aria-pressed={selectedBlock.underline === true}
+                      className={selectedBlock.underline ? "active" : ""}
+                      title="Underline"
+                      type="button"
+                      onClick={() =>
                         updateBlock(selectedBlock.id, {
-                          align: event.currentTarget
-                            .value as TemplateBlock["align"],
+                          underline: selectedBlock.underline !== true,
                         })
                       }
                     >
-                      <option value="left">Left</option>
-                      <option value="center">Center</option>
-                      <option value="right">Right</option>
-                    </select>
-                  </label>
-                </div>
-                <div className="format-button-row">
-                  <button
-                    aria-pressed={selectedBlock.fontWeight === "700"}
-                    className={
-                      selectedBlock.fontWeight === "700" ? "active" : ""
-                    }
-                    title="Bold"
-                    type="button"
-                    onClick={() =>
-                      updateBlock(selectedBlock.id, {
-                        fontWeight:
-                          selectedBlock.fontWeight === "700" ? "400" : "700",
-                      })
-                    }
-                  >
-                    B
-                  </button>
-                  <button
-                    aria-pressed={selectedBlock.italic === true}
-                    className={selectedBlock.italic ? "active" : ""}
-                    title="Italic"
-                    type="button"
-                    onClick={() =>
-                      updateBlock(selectedBlock.id, {
-                        italic: selectedBlock.italic !== true,
-                      })
-                    }
-                  >
-                    I
-                  </button>
-                  <button
-                    aria-pressed={selectedBlock.underline === true}
-                    className={selectedBlock.underline ? "active" : ""}
-                    title="Underline"
-                    type="button"
-                    onClick={() =>
-                      updateBlock(selectedBlock.id, {
-                        underline: selectedBlock.underline !== true,
-                      })
-                    }
-                  >
-                    U
-                  </button>
-                  <button
-                    aria-pressed={selectedBlock.uppercase === true}
-                    className={selectedBlock.uppercase ? "active" : ""}
-                    title="Uppercase"
-                    type="button"
-                    onClick={() =>
-                      updateBlock(selectedBlock.id, {
-                        uppercase: selectedBlock.uppercase !== true,
-                      })
-                    }
-                  >
-                    AA
-                  </button>
-                </div>
-                <div className="style-grid">
-                  <label>
-                    <span>Text</span>
-                    <input
-                      type="color"
-                      value={normalizeHex(selectedBlock.color, "#111827")}
-                      onChange={(event) =>
+                      U
+                    </button>
+                    <button
+                      aria-pressed={selectedBlock.uppercase === true}
+                      className={selectedBlock.uppercase ? "active" : ""}
+                      title="Uppercase"
+                      type="button"
+                      onClick={() =>
                         updateBlock(selectedBlock.id, {
-                          color: event.currentTarget.value,
+                          uppercase: selectedBlock.uppercase !== true,
                         })
                       }
-                    />
-                  </label>
-                  <label>
-                    <span>Fill</span>
-                    <input
-                      disabled={selectedBlock.background === "transparent"}
-                      type="color"
-                      value={
-                        selectedBlock.background === "transparent"
-                          ? "#ffffff"
-                          : normalizeHex(selectedBlock.background, "#ffffff")
-                      }
-                      onChange={(event) =>
-                        updateBlock(selectedBlock.id, {
-                          background: event.currentTarget.value,
-                        })
-                      }
-                    />
-                  </label>
-                </div>
-                <div className="option-grid">
-                  <label className="checkbox-row compact-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={selectedBlock.background !== "transparent"}
-                      onChange={(event) =>
-                        updateBlock(selectedBlock.id, {
-                          background: event.currentTarget.checked
+                    >
+                      AA
+                    </button>
+                  </div>
+                  <div className="style-grid">
+                    <label>
+                      <span>Text</span>
+                      <input
+                        type="color"
+                        value={normalizeHex(selectedBlock.color, "#111827")}
+                        onChange={(event) =>
+                          updateBlock(selectedBlock.id, {
+                            color: event.currentTarget.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Fill</span>
+                      <input
+                        disabled={selectedBlock.background === "transparent"}
+                        type="color"
+                        value={
+                          selectedBlock.background === "transparent"
                             ? "#ffffff"
-                            : "transparent",
-                        })
-                      }
-                    />
-                    <span>Fill</span>
-                  </label>
-                  <label className="checkbox-row compact-checkbox">
+                            : normalizeHex(selectedBlock.background, "#ffffff")
+                        }
+                        onChange={(event) =>
+                          updateBlock(selectedBlock.id, {
+                            background: event.currentTarget.value,
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                  <div className="option-grid">
+                    <label className="checkbox-row compact-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={selectedBlock.background !== "transparent"}
+                        onChange={(event) =>
+                          updateBlock(selectedBlock.id, {
+                            background: event.currentTarget.checked
+                              ? "#ffffff"
+                              : "transparent",
+                          })
+                        }
+                      />
+                      <span>Fill</span>
+                    </label>
+                    <label className="checkbox-row compact-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={selectedBlock.border === true}
+                        onChange={(event) =>
+                          updateBlock(selectedBlock.id, {
+                            border: event.currentTarget.checked,
+                          })
+                        }
+                      />
+                      <span>Border</span>
+                    </label>
+                  </div>
+                  <label>
+                    <span>Padding</span>
                     <input
-                      type="checkbox"
-                      checked={selectedBlock.border === true}
+                      min="0"
+                      type="number"
+                      value={selectedBlock.padding || 0}
                       onChange={(event) =>
                         updateBlock(selectedBlock.id, {
-                          border: event.currentTarget.checked,
+                          padding: Number(event.currentTarget.value),
                         })
                       }
                     />
-                    <span>Border</span>
                   </label>
-                </div>
-                <label>
-                  <span>Padding</span>
-                  <input
-                    min="0"
-                    type="number"
-                    value={selectedBlock.padding || 0}
-                    onChange={(event) =>
-                      updateBlock(selectedBlock.id, {
-                        padding: Number(event.currentTarget.value),
-                      })
-                    }
-                  />
-                </label>
-              </>
-            ) : (
-              <p className="empty-state">Select a block to edit it.</p>
-            )}
+                </>
+              ) : (
+                <p className="empty-state">Select a block to edit it.</p>
+              )}
+            </div>
+            <div className="word-statusbar">
+              <span>Page 1</span>
+              <span>
+                {selectedBlock
+                  ? `${blockTypeLabel(selectedBlock)}: ${blockLabel(selectedBlock)}`
+                  : "No block selected"}
+              </span>
+              {selectedBlock ? (
+                <span>
+                  X {selectedBlock.x} Y {selectedBlock.y} W {selectedBlock.w} H{" "}
+                  {selectedBlock.h}
+                </span>
+              ) : null}
+              <span>{Math.round(zoom * 100)}%</span>
+            </div>
           </div>
         </div>
       </Form>
+      {pageSetupOpen ? (
+        <div className="page-setup-backdrop">
+          <div className="page-setup-dialog" role="dialog" aria-modal="true">
+            <div className="page-setup-heading">
+              <strong>Page setup</strong>
+              <button type="button" onClick={() => setPageSetupOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="page-setup-grid">
+              <label>
+                <span>Page size</span>
+                <select
+                  value={design.page.size || "custom"}
+                  onChange={(event) => applyPageSize(event.currentTarget.value)}
+                >
+                  {PAGE_SIZE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Width</span>
+                <input
+                  min="288"
+                  type="number"
+                  value={design.page.width}
+                  onChange={(event) =>
+                    updatePage({
+                      size: "custom",
+                      width: Number(event.currentTarget.value),
+                    })
+                  }
+                />
+              </label>
+              <label>
+                <span>Height</span>
+                <input
+                  min="288"
+                  type="number"
+                  value={design.page.height}
+                  onChange={(event) =>
+                    updatePage({
+                      size: "custom",
+                      height: Number(event.currentTarget.value),
+                    })
+                  }
+                />
+              </label>
+              {(
+                [
+                  ["marginTop", "Top"],
+                  ["marginRight", "Right"],
+                  ["marginBottom", "Bottom"],
+                  ["marginLeft", "Left"],
+                ] as const
+              ).map(([key, label]) => (
+                <label key={key}>
+                  <span>{label}</span>
+                  <input
+                    min="0"
+                    type="number"
+                    value={design.page[key] || 0}
+                    onChange={(event) =>
+                      updatePage({ [key]: Number(event.currentTarget.value) })
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {mentionMenu ? (
         <div
           className="mention-menu"
