@@ -1,7 +1,8 @@
 .printer-shell {
   display: grid;
   gap: 16px;
-  max-width: 1480px;
+  max-width: none;
+  width: 100%;
 }
 
 .notice {
@@ -177,15 +178,27 @@
 }
 
 .template-editor {
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  box-shadow: 0 1px 5px rgb(17 24 39 / 8%);
   display: grid;
-  gap: 14px;
+  gap: 12px;
+  margin-left: 50%;
+  padding: 12px;
+  transform: translateX(-50%);
+  width: min(1840px, calc(100vw - 32px));
 }
 
 .template-topbar {
   align-items: end;
+  background: #ffffff;
   display: grid;
   gap: 12px;
   grid-template-columns: minmax(260px, 1fr) auto;
+  position: sticky;
+  top: 0;
+  z-index: 8;
 }
 
 .template-topbar-actions {
@@ -219,6 +232,24 @@
   text-transform: uppercase;
 }
 
+.template-topbar label,
+.page-settings label,
+.template-toolbar label,
+.template-inspector label {
+  min-width: 0;
+}
+
+.template-topbar input,
+.page-settings input,
+.page-settings select,
+.template-toolbar select,
+.template-inspector input,
+.template-inspector select,
+.template-inspector textarea,
+.token-inserter select {
+  width: 100%;
+}
+
 .template-inspector textarea {
   font-family: "Courier New", Courier, monospace;
   min-height: 96px;
@@ -230,30 +261,37 @@
 
 .page-settings {
   align-items: end;
-  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  border: 1px solid #dbe1ea;
   border-radius: 6px;
   display: grid;
-  gap: 10px;
-  grid-template-columns: minmax(160px, 1.2fr) repeat(6, minmax(72px, 0.55fr));
+  gap: 8px;
+  grid-template-columns: minmax(140px, 1.2fr) repeat(6, minmax(68px, 1fr));
   padding: 10px;
 }
 
 .template-workspace {
   align-items: start;
   display: grid;
-  gap: 14px;
-  grid-template-columns: 240px minmax(720px, 1fr) 280px;
-  overflow-x: auto;
+  gap: 12px;
+  grid-template-columns: 216px minmax(0, 1fr) 316px;
+  min-width: 0;
+  overflow: visible;
 }
 
 .template-sidebar {
   display: grid;
   gap: 12px;
+  max-height: calc(100vh - 210px);
+  overflow: auto;
+  position: sticky;
+  top: 72px;
 }
 
 .template-panel,
 .template-inspector {
-  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  border: 1px solid #dbe1ea;
   border-radius: 6px;
   display: grid;
   gap: 10px;
@@ -263,6 +301,7 @@
 .template-panel h3 {
   color: #111827;
   font-size: 12px;
+  letter-spacing: 0.02em;
   margin: 0;
   text-transform: uppercase;
 }
@@ -280,6 +319,15 @@
   color: #111827;
   min-height: 34px;
   text-align: left;
+}
+
+.template-button-grid button:hover,
+.field-list button:hover,
+.template-layer-list button:hover,
+.format-button-row button:hover,
+.item-column-actions button:hover {
+  background: #eef6f7;
+  border-color: #0891b2;
 }
 
 .field-list {
@@ -321,12 +369,13 @@
 .template-stage-column {
   display: grid;
   gap: 10px;
-  min-width: 720px;
+  min-width: 0;
 }
 
 .template-toolbar {
   align-items: end;
-  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  border: 1px solid #dbe1ea;
   border-radius: 6px;
   display: flex;
   flex-wrap: wrap;
@@ -353,14 +402,17 @@
 }
 
 .template-stage {
-  background: #f3f4f6;
+  background: #eef2f7;
   border: 1px solid #d1d5db;
   border-radius: 6px;
+  height: calc(100vh - 260px);
+  min-height: 560px;
   overflow: auto;
   padding: 18px;
 }
 
 .template-canvas-space {
+  margin: 0 auto;
   position: relative;
 }
 
@@ -598,6 +650,10 @@
 
 .template-inspector {
   align-content: start;
+  max-height: calc(100vh - 210px);
+  overflow: auto;
+  position: sticky;
+  top: 72px;
 }
 
 .template-inspector-heading {

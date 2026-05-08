@@ -736,7 +736,7 @@ function TemplateDesigner({
   const [selectedId, setSelectedId] = useState(
     template.design.blocks[0]?.id || "",
   );
-  const [zoom, setZoom] = useState(0.75);
+  const [zoom, setZoom] = useState(0.65);
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [tokenField, setTokenField] = useState(TEMPLATE_FIELDS[0]?.value || "");
   const [editingTextBlockId, setEditingTextBlockId] = useState<string | null>(
@@ -1371,6 +1371,7 @@ function TemplateDesigner({
                 onChange={(event) => setZoom(Number(event.currentTarget.value))}
               >
                 <option value={0.5}>50%</option>
+                <option value={0.6}>60%</option>
                 <option value={0.65}>65%</option>
                 <option value={0.75}>75%</option>
                 <option value={0.9}>90%</option>
