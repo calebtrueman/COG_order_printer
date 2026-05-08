@@ -739,7 +739,14 @@ function TemplateDesigner({
   const [zoom, setZoom] = useState(0.75);
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [tokenField, setTokenField] = useState(TEMPLATE_FIELDS[0]?.value || "");
+  const [editingTextBlockId, setEditingTextBlockId] = useState<string | null>(
+    null,
+  );
+  const [editingItemsBlockId, setEditingItemsBlockId] = useState<string | null>(
+    null,
+  );
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const inlineTextRef = useRef<HTMLTextAreaElement | null>(null);
   const operationRef = useRef<CanvasOperation | null>(null);
   const selectedBlock = useMemo(
     () => design.blocks.find((block) => block.id === selectedId) || null,
@@ -757,8 +764,27 @@ function TemplateDesigner({
 
     setName(template.name);
     setDesign(nextDesign);
+    setEditingTextBlockId(null);
+    setEditingItemsBlockId(null);
     setSelectedId(nextDesign.blocks[0]?.id || "");
   }, [template.design, template.name]);
+
+  useEffect(() => {
+    if (!editingTextBlockId) {
+      return;
+    }
+
+    const block = design.blocks.find((item) => item.id === editingTextBlockId);
+
+    if (!block || block.type !== "text") {
+      setEditingTextBlockId(null);
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      inlineTextRef.current?.focus();
+    });
+  }, [design.blocks, editingTextBlockId]);
 
   function updateBlock(id: string, patch: Partial<TemplateBlock>) {
     setDesign((current) => ({
@@ -812,6 +838,8 @@ function TemplateDesigner({
       ...current,
       blocks: [...current.blocks, block],
     }));
+    setEditingTextBlockId(type === "text" ? block.id : null);
+    setEditingItemsBlockId(type === "items" ? block.id : null);
     setSelectedId(block.id);
   }
 
@@ -834,6 +862,8 @@ function TemplateDesigner({
       ...current,
       blocks: [...current.blocks, duplicate],
     }));
+    setEditingTextBlockId(null);
+    setEditingItemsBlockId(null);
     setSelectedId(duplicate.id);
   }
 
@@ -846,6 +876,8 @@ function TemplateDesigner({
       ...current,
       blocks: current.blocks.filter((block) => block.id !== selectedBlock.id),
     }));
+    setEditingTextBlockId(null);
+    setEditingItemsBlockId(null);
     setSelectedId("");
   }
 
@@ -875,6 +907,8 @@ function TemplateDesigner({
 
     setName(template.name);
     setDesign(nextDesign);
+    setEditingTextBlockId(null);
+    setEditingItemsBlockId(null);
     setSelectedId(nextDesign.blocks[0]?.id || "");
   }
 
@@ -898,7 +932,28 @@ function TemplateDesigner({
     event: PointerEvent<HTMLDivElement>,
     block: TemplateBlock,
   ) {
-    if ((event.target as HTMLElement).dataset.resizeHandle) {
+    const target = event.target as HTMLElement;
+
+    if (
+      target.dataset.resizeHandle ||
+      target.closest("button, input, select, textarea")
+    ) {
+      return;
+    }
+
+    if (block.type === "text" && event.detail > 1) {
+      setSelectedId(block.id);
+      setEditingTextBlockId(block.id);
+      setEditingItemsBlockId(null);
+      event.preventDefault();
+      return;
+    }
+
+    if (block.type === "items" && event.detail > 1) {
+      setSelectedId(block.id);
+      setEditingItemsBlockId(block.id);
+      setEditingTextBlockId(null);
+      event.preventDefault();
       return;
     }
 
@@ -912,6 +967,8 @@ function TemplateDesigner({
       original: block,
     };
     setSelectedId(block.id);
+    setEditingTextBlockId(null);
+    setEditingItemsBlockId(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
   }
@@ -932,6 +989,8 @@ function TemplateDesigner({
       handle,
     };
     setSelectedId(block.id);
+    setEditingTextBlockId(null);
+    setEditingItemsBlockId(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
     event.stopPropagation();
@@ -1026,6 +1085,11 @@ function TemplateDesigner({
     event: KeyboardEvent<HTMLTextAreaElement>,
     block: TemplateBlock,
   ) {
+    if (event.key === "Escape") {
+      setEditingTextBlockId(null);
+      return;
+    }
+
     if (event.key !== "Tab") {
       return;
     }
@@ -1062,6 +1126,24 @@ function TemplateDesigner({
     }
   }
 
+  function openCanvasEditor(block: TemplateBlock) {
+    setSelectedId(block.id);
+    setEditingTextBlockId(block.type === "text" ? block.id : null);
+    setEditingItemsBlockId(block.type === "items" ? block.id : null);
+  }
+
+  function updateItemColumnInBlock(
+    block: TemplateBlock,
+    key: ItemColumnKey,
+    patch: Partial<ReturnType<typeof normalizeItemColumns>[number]>,
+  ) {
+    updateBlock(block.id, {
+      itemColumns: normalizeItemColumns(block.itemColumns).map((column) =>
+        column.key === key ? { ...column, ...patch } : column,
+      ),
+    });
+  }
+
   function updateItemColumn(
     key: ItemColumnKey,
     patch: Partial<ReturnType<typeof normalizeItemColumns>[number]>,
@@ -1070,10 +1152,20 @@ function TemplateDesigner({
       return;
     }
 
-    updateBlock(selectedBlock.id, {
-      itemColumns: normalizeItemColumns(selectedBlock.itemColumns).map(
-        (column) => (column.key === key ? { ...column, ...patch } : column),
+    updateItemColumnInBlock(selectedBlock, key, patch);
+  }
+
+  function toggleItemColumnInBlock(
+    block: TemplateBlock,
+    key: ItemColumnKey,
+    enabled: boolean,
+  ) {
+    updateBlock(block.id, {
+      itemColumns: normalizeItemColumns(block.itemColumns).map((column) =>
+        column.key === key ? { ...column, enabled } : column,
       ),
+      ...(key === "image" ? { showImages: enabled } : {}),
+      ...(key === "sku" ? { showSku: enabled } : {}),
     });
   }
 
@@ -1082,21 +1174,15 @@ function TemplateDesigner({
       return;
     }
 
-    updateBlock(selectedBlock.id, {
-      itemColumns: normalizeItemColumns(selectedBlock.itemColumns).map(
-        (column) => (column.key === key ? { ...column, enabled } : column),
-      ),
-      ...(key === "image" ? { showImages: enabled } : {}),
-      ...(key === "sku" ? { showSku: enabled } : {}),
-    });
+    toggleItemColumnInBlock(selectedBlock, key, enabled);
   }
 
-  function moveItemColumn(key: ItemColumnKey, direction: -1 | 1) {
-    if (!selectedBlock) {
-      return;
-    }
-
-    const columns = normalizeItemColumns(selectedBlock.itemColumns);
+  function moveItemColumnInBlock(
+    block: TemplateBlock,
+    key: ItemColumnKey,
+    direction: -1 | 1,
+  ) {
+    const columns = normalizeItemColumns(block.itemColumns);
     const index = columns.findIndex((column) => column.key === key);
     const targetIndex = index + direction;
 
@@ -1108,7 +1194,15 @@ function TemplateDesigner({
     const [column] = next.splice(index, 1);
 
     next.splice(targetIndex, 0, column);
-    updateBlock(selectedBlock.id, { itemColumns: next });
+    updateBlock(block.id, { itemColumns: next });
+  }
+
+  function moveItemColumn(key: ItemColumnKey, direction: -1 | 1) {
+    if (!selectedBlock) {
+      return;
+    }
+
+    moveItemColumnInBlock(selectedBlock, key, direction);
   }
 
   return (
@@ -1355,6 +1449,10 @@ function TemplateDesigner({
                 />
                 {design.blocks.map((block) => {
                   const selected = block.id === selectedId;
+                  const editingText =
+                    block.type === "text" && editingTextBlockId === block.id;
+                  const editingItems =
+                    block.type === "items" && editingItemsBlockId === block.id;
 
                   return (
                     <div
@@ -1363,13 +1461,128 @@ function TemplateDesigner({
                       }`}
                       key={block.id}
                       onKeyDown={handleBlockKeyDown}
+                      onDoubleClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        openCanvasEditor(block);
+                      }}
                       onPointerDown={(event) => startMove(event, block)}
                       role="button"
                       style={previewStyle(block)}
                       tabIndex={0}
                     >
-                      <TemplateBlockPreview block={block} />
-                      {selected
+                      {editingText ? (
+                        <textarea
+                          ref={inlineTextRef}
+                          className="template-inline-textarea"
+                          value={block.text || ""}
+                          onBlur={() => setEditingTextBlockId(null)}
+                          onChange={(event) => handleTextChange(event, block)}
+                          onClick={(event) => event.stopPropagation()}
+                          onDoubleClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => {
+                            event.stopPropagation();
+                            handleTextAreaKeyDown(event, block);
+                          }}
+                          onPointerDown={(event) => event.stopPropagation()}
+                        />
+                      ) : editingItems ? (
+                        <div className="template-inline-table-editor">
+                          <div className="inline-editor-heading">
+                            Item table columns
+                            <button
+                              type="button"
+                              onClick={() => setEditingItemsBlockId(null)}
+                            >
+                              Done
+                            </button>
+                          </div>
+                          {normalizeItemColumns(block.itemColumns).map(
+                            (column, index, columns) => (
+                              <div
+                                className="inline-table-column-row"
+                                key={column.key}
+                              >
+                                <label className="checkbox-row compact-checkbox">
+                                  <input
+                                    type="checkbox"
+                                    checked={column.enabled}
+                                    onKeyDown={(event) =>
+                                      event.stopPropagation()
+                                    }
+                                    onChange={(event) =>
+                                      toggleItemColumnInBlock(
+                                        block,
+                                        column.key,
+                                        event.currentTarget.checked,
+                                      )
+                                    }
+                                  />
+                                  <span>{column.key}</span>
+                                </label>
+                                <input
+                                  aria-label={`${column.key} label`}
+                                  value={column.label}
+                                  onKeyDown={(event) => event.stopPropagation()}
+                                  onChange={(event) =>
+                                    updateItemColumnInBlock(block, column.key, {
+                                      label: event.currentTarget.value,
+                                    })
+                                  }
+                                />
+                                <input
+                                  aria-label={`${column.key} width`}
+                                  min="32"
+                                  type="number"
+                                  value={column.width}
+                                  onKeyDown={(event) => event.stopPropagation()}
+                                  onChange={(event) =>
+                                    updateItemColumnInBlock(block, column.key, {
+                                      width: Number(event.currentTarget.value),
+                                    })
+                                  }
+                                />
+                                <button
+                                  type="button"
+                                  disabled={index === 0}
+                                  onClick={() =>
+                                    moveItemColumnInBlock(block, column.key, -1)
+                                  }
+                                >
+                                  Up
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={index === columns.length - 1}
+                                  onClick={() =>
+                                    moveItemColumnInBlock(block, column.key, 1)
+                                  }
+                                >
+                                  Down
+                                </button>
+                              </div>
+                            ),
+                          )}
+                        </div>
+                      ) : (
+                        <TemplateBlockPreview block={block} />
+                      )}
+                      {selected &&
+                      !editingText &&
+                      !editingItems &&
+                      (block.type === "text" || block.type === "items") ? (
+                        <button
+                          className="canvas-edit-button"
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openCanvasEditor(block);
+                          }}
+                        >
+                          {block.type === "items" ? "Edit table" : "Edit text"}
+                        </button>
+                      ) : null}
+                      {selected && !editingText && !editingItems
                         ? RESIZE_HANDLES.map((handle) => (
                             <span
                               className={`resize-handle ${handle}`}
