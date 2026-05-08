@@ -386,6 +386,10 @@ type CanvasOperation =
     };
 
 const RESIZE_HANDLES: ResizeHandle[] = ["nw", "ne", "sw", "se"];
+const MOVE_CORNER_SIZE = 28;
+const ZOOM_OPTIONS = [
+  0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1, 1.1, 1.2,
+];
 
 function copyDesign(design: TemplateDesign): TemplateDesign {
   const next = JSON.parse(JSON.stringify(design)) as TemplateDesign;
@@ -434,10 +438,6 @@ function snapValue(value: number, snapToGrid: boolean) {
 
 function fieldFor(value: string | undefined) {
   return TEMPLATE_FIELDS.find((field) => field.value === value) || null;
-}
-
-function fieldSample(value: string | undefined) {
-  return fieldFor(value)?.sample || "";
 }
 
 function escapeRegExp(value: string) {
@@ -632,10 +632,6 @@ function textBlockHtml(block: TemplateBlock) {
   return sanitizeTemplateHtml(block.textHtml || plainTextToHtml(block.text));
 }
 
-function sampleTextHtml(block: TemplateBlock) {
-  return sanitizeTemplateHtml(replaceSampleTokens(textBlockHtml(block)));
-}
-
 function snapMentions(value: string) {
   return TEMPLATE_FIELDS.reduce((current, field) => {
     const pattern = new RegExp(
@@ -757,72 +753,15 @@ function currentMentionRange(editor: HTMLDivElement) {
   };
 }
 
-function replaceSampleTokens(text: string | undefined) {
-  return String(text || "").replace(
-    /\{\{\s*([\w.]+)\s*\}\}/g,
-    (_match, field) => fieldSample(field),
-  );
-}
-
-function lineBreaks(value: string) {
-  const lines = value.split(/\r?\n/);
-
-  return lines.map((line, index) => (
-    <span key={`${line}-${index}`}>
-      {line}
-      {index < lines.length - 1 ? <br /> : null}
-    </span>
-  ));
-}
-
 function richTextPreview(block: TemplateBlock) {
-  if (block.textHtml) {
-    return (
-      <div
-        className="template-rich-preview"
-        dangerouslySetInnerHTML={{
-          __html: sampleTextHtml(block),
-        }}
-      />
-    );
-  }
-
-  const text = replaceSampleTokens(block.text);
-  const tokenPattern = /\{\{\s*([\w.]+)\s*\}\}/g;
-  const nodes = [];
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = tokenPattern.exec(String(block.text || "")))) {
-    const before = String(block.text || "").slice(cursor, match.index);
-
-    if (before) {
-      nodes.push(
-        <span key={`t-${cursor}`}>
-          {lineBreaks(replaceSampleTokens(before))}
-        </span>,
-      );
-    }
-
-    const field = fieldFor(match[1]);
-
-    nodes.push(
-      <span className="variable-chip" key={`v-${match.index}`}>
-        {field?.sample || field?.label || match[1]}
-      </span>,
-    );
-    cursor = match.index + match[0].length;
-  }
-
-  const rest = String(block.text || "").slice(cursor);
-
-  if (rest) {
-    nodes.push(
-      <span key={`t-${cursor}`}>{lineBreaks(replaceSampleTokens(rest))}</span>,
-    );
-  }
-
-  return nodes.length ? nodes : lineBreaks(text);
+  return (
+    <div
+      className="template-rich-preview"
+      dangerouslySetInnerHTML={{
+        __html: templateHtmlToEditorHtml(textBlockHtml(block)),
+      }}
+    />
+  );
 }
 
 function blockLabel(block: TemplateBlock) {
@@ -1017,11 +956,8 @@ function createTemplateBlock(
       w: type === "items" ? 680 : type === "image" ? 150 : 240,
       h: type === "items" ? 330 : type === "image" ? 130 : 64,
       field: type === "field" || type === "image" ? field : "",
-      text: type === "text" ? "Custom text with @@Order # or any variable" : "",
-      textHtml:
-        type === "text"
-          ? plainTextToHtml("Custom text with @@Order # or any variable")
-          : "",
+      text: "",
+      textHtml: "",
       imageUrl: "",
       label: type === "field" ? selectedField?.label || "Order field" : "",
       fontSize: type === "text" ? 14 : 12,
@@ -1197,7 +1133,11 @@ function TemplateBlockPreview({ block }: { block: TemplateBlock }) {
     return <>{richTextPreview(block)}</>;
   }
 
-  return <span>{lineBreaks(fieldSample(block.field))}</span>;
+  return (
+    <span className="variable-chip">
+      {fieldFor(block.field)?.label || block.field || "Field"}
+    </span>
+  );
 }
 
 function editorSelectionOffsets(editor: HTMLDivElement) {
@@ -1705,10 +1645,14 @@ function TemplateDesigner({
     block: TemplateBlock,
   ) {
     const target = event.target as HTMLElement;
-    const dragHandle = target.closest("[data-drag-handle]");
+    const blockRect = event.currentTarget.getBoundingClientRect();
+    const usingMoveCorner =
+      block.id === selectedId &&
+      event.clientX - blockRect.left <= MOVE_CORNER_SIZE &&
+      event.clientY - blockRect.top <= MOVE_CORNER_SIZE;
 
     if (
-      !dragHandle &&
+      !usingMoveCorner &&
       (target.dataset.resizeHandle ||
         target.closest(
           "button, input, select, textarea, [contenteditable='true']",
@@ -1717,7 +1661,7 @@ function TemplateDesigner({
       return;
     }
 
-    if (!dragHandle && block.type === "text" && event.detail > 1) {
+    if (!usingMoveCorner && block.type === "text" && event.detail > 1) {
       setSelectedId(block.id);
       setEditingTextBlockId(block.id);
       setEditingItemsBlockId(null);
@@ -1725,11 +1669,19 @@ function TemplateDesigner({
       return;
     }
 
-    if (!dragHandle && block.type === "items" && event.detail > 1) {
+    if (!usingMoveCorner && block.type === "items" && event.detail > 1) {
       setSelectedId(block.id);
       setEditingItemsBlockId(block.id);
       setEditingTextBlockId(null);
       event.preventDefault();
+      return;
+    }
+
+    setSelectedId(block.id);
+
+    if (!usingMoveCorner) {
+      setEditingTextBlockId(null);
+      setEditingItemsBlockId(null);
       return;
     }
 
@@ -1742,11 +1694,6 @@ function TemplateDesigner({
       startY: point.y,
       original: block,
     };
-    setSelectedId(block.id);
-    if (!dragHandle) {
-      setEditingTextBlockId(null);
-      setEditingItemsBlockId(null);
-    }
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
   }
@@ -1818,19 +1765,12 @@ function TemplateDesigner({
   }
 
   function handleStageWheel(event: WheelEvent<HTMLDivElement>) {
-    const target = event.target as HTMLElement;
-
-    if (
-      !(event.metaKey || event.ctrlKey) ||
-      target.closest(
-        "button, input, select, textarea, [contenteditable='true']",
-      ) ||
-      !target.closest(".template-canvas-space")
-    ) {
+    if (!(event.metaKey || event.ctrlKey)) {
       return;
     }
 
     event.preventDefault();
+    event.stopPropagation();
     setZoom((current) =>
       normalizeZoom(current + (event.deltaY < 0 ? 0.05 : -0.05)),
     );
@@ -1881,7 +1821,7 @@ function TemplateDesigner({
       return;
     }
 
-    const activeEditor = activeRichEditorRef.current;
+    const activeEditor = usableRichEditor();
     const activeBlock = activeEditor
       ? design.blocks.find((block) => block.id === activeEditor.dataset.blockId)
       : null;
@@ -2005,9 +1945,21 @@ function TemplateDesigner({
   function syncRichTextElement(element: HTMLDivElement, block: TemplateBlock) {
     const html = editorElementToTemplateHtml(element);
     const text = htmlToPlainText(html);
+    const patch: Partial<TemplateBlock> = { text, textHtml: html };
 
     syncRichTextEditors(block.id, html, element);
-    updateBlock(block.id, { text, textHtml: html });
+
+    if (element.classList.contains("template-inline-textarea")) {
+      const nextHeight = Math.ceil(
+        element.scrollHeight + (block.padding || 0) * 2 + 2,
+      );
+
+      if (nextHeight > block.h) {
+        patch.h = nextHeight;
+      }
+    }
+
+    updateBlock(block.id, patch);
   }
 
   function handleRichTextKeyDown(
@@ -2125,6 +2077,23 @@ function TemplateDesigner({
     restoreEditorSelection(editor, savedSelection);
   }
 
+  function usableRichEditor() {
+    const editor = activeRichEditorRef.current;
+
+    if (!editor?.isConnected) {
+      return null;
+    }
+
+    if (
+      editor.closest(".template-inspector") ||
+      editor.dataset.blockId !== selectedId
+    ) {
+      return null;
+    }
+
+    return editor;
+  }
+
   function applyRichTextCommand(command: string) {
     if (command === "bold") {
       wrapRichSelection({ fontWeight: "700" });
@@ -2157,9 +2126,7 @@ function TemplateDesigner({
     style: Partial<CSSStyleDeclaration>,
     fallback = "",
   ) {
-    const editor = activeRichEditorRef.current?.isConnected
-      ? activeRichEditorRef.current
-      : null;
+    const editor = usableRichEditor();
     const block =
       (editor
         ? design.blocks.find((item) => item.id === editor.dataset.blockId)
@@ -2221,9 +2188,28 @@ function TemplateDesigner({
         return;
       }
 
+      const blockPatch = {
+        ...(style.fontFamily ? { fontFamily: style.fontFamily } : {}),
+        ...(style.fontSize
+          ? { fontSize: Number.parseInt(style.fontSize, 10) }
+          : {}),
+        ...(style.fontWeight
+          ? { fontWeight: style.fontWeight === "700" ? "700" : "400" }
+          : {}),
+        ...(style.fontStyle ? { italic: style.fontStyle === "italic" } : {}),
+        ...(style.textDecoration
+          ? { underline: style.textDecoration === "underline" }
+          : {}),
+        ...(style.color ? { color: style.color } : {}),
+      };
+
+      updateBlock(block.id, blockPatch);
+      Object.assign(editor.style, style);
+
       selectEditorContents(editor);
 
-      if (!selection.rangeCount) {
+      if (!selection.rangeCount || !editor.textContent?.trim()) {
+        rememberRichSelection(editor);
         return;
       }
     }
@@ -2748,13 +2734,11 @@ function TemplateDesigner({
                 setZoom(normalizeZoom(Number(event.currentTarget.value)))
               }
             >
-              <option value={0.5}>50%</option>
-              <option value={0.6}>60%</option>
-              <option value={0.65}>65%</option>
-              <option value={0.75}>75%</option>
-              <option value={0.9}>90%</option>
-              <option value={1}>100%</option>
-              <option value={1.2}>120%</option>
+              {ZOOM_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {Math.round(option * 100)}%
+                </option>
+              ))}
             </select>
           </label>
           <label className="word-checkbox">
@@ -2817,6 +2801,7 @@ function TemplateDesigner({
                           className={`template-block-preview ${
                             selected ? "selected" : ""
                           }`}
+                          data-block-type={block.type}
                           key={block.id}
                           onKeyDown={handleBlockKeyDown}
                           onDoubleClick={(event) => {
@@ -2949,19 +2934,10 @@ function TemplateDesigner({
                           ) : (
                             <TemplateBlockPreview block={block} />
                           )}
-                          {selected ? (
-                            <span
-                              className="canvas-move-handle"
-                              data-drag-handle="true"
-                              title="Drag to move"
-                            >
-                              <span aria-hidden="true">⋮⋮</span>
-                            </span>
-                          ) : null}
                           {selected &&
                           !editingText &&
                           !editingItems &&
-                          (block.type === "text" || block.type === "items") ? (
+                          block.type === "items" ? (
                             <button
                               className="canvas-edit-button"
                               type="button"
@@ -2970,9 +2946,7 @@ function TemplateDesigner({
                                 openCanvasEditor(block);
                               }}
                             >
-                              {block.type === "items"
-                                ? "Edit table"
-                                : "Edit text"}
+                              Edit table
                             </button>
                           ) : null}
                           {selected && !editingText && !editingItems
