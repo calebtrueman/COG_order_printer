@@ -363,7 +363,9 @@ function clampFloat(value: number, min: number, max: number) {
 }
 
 function normalizeZoom(value: number) {
-  return clampFloat(value, MIN_TEMPLATE_ZOOM, MAX_TEMPLATE_ZOOM);
+  const stepped = Math.round(value / 0.05) * 0.05;
+
+  return clampFloat(stepped, MIN_TEMPLATE_ZOOM, MAX_TEMPLATE_ZOOM);
 }
 
 type ResizeHandle = "nw" | "ne" | "sw" | "se";
@@ -387,9 +389,26 @@ type CanvasOperation =
 
 const RESIZE_HANDLES: ResizeHandle[] = ["nw", "ne", "sw", "se"];
 const MOVE_CORNER_SIZE = 28;
-const ZOOM_OPTIONS = [
-  0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1, 1.1, 1.2,
-];
+const ZOOM_OPTIONS = Array.from(
+  {
+    length: Math.round((MAX_TEMPLATE_ZOOM - MIN_TEMPLATE_ZOOM) / 0.05) + 1,
+  },
+  (_item, index) => normalizeZoom(MIN_TEMPLATE_ZOOM + index * 0.05),
+);
+const RICH_TEXT_SIZE_OPTIONS = Array.from(
+  { length: 65 },
+  (_item, index) => index + 8,
+);
+
+type TextFormatState = {
+  blockId: string;
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  fontWeight: "400" | "700";
+  italic: boolean;
+  underline: boolean;
+};
 
 function copyDesign(design: TemplateDesign): TemplateDesign {
   const next = JSON.parse(JSON.stringify(design)) as TemplateDesign;
@@ -802,10 +821,65 @@ function normalizeHex(value: string | undefined, fallback: string) {
   return value && /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback;
 }
 
+function fontSignature(value: string | undefined) {
+  return String(value || "")
+    .split(",")[0]
+    .trim()
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
 function normalizeFontFamily(value: string | undefined) {
-  return FONT_FAMILIES.some((font) => font.value === value)
-    ? value
-    : FONT_FAMILIES[0].value;
+  return (
+    FONT_FAMILIES.find((font) => font.value === value)?.value ||
+    FONT_FAMILIES[0]?.value ||
+    "Arial, Helvetica, sans-serif"
+  );
+}
+
+function canonicalFontFamily(value: string | undefined) {
+  const signature = fontSignature(value);
+  const matchingFont = FONT_FAMILIES.find(
+    (font) => fontSignature(font.value) === signature,
+  );
+
+  return matchingFont?.value || normalizeFontFamily(value);
+}
+
+function cssColorToHex(value: string | undefined, fallback: string) {
+  if (normalizeHex(value, "")) {
+    return value as string;
+  }
+
+  const match = String(value || "").match(
+    /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/i,
+  );
+
+  if (!match) {
+    return normalizeHex(fallback, "#111827");
+  }
+
+  return `#${match
+    .slice(1, 4)
+    .map((part) =>
+      Math.max(0, Math.min(255, Number(part)))
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("")}`;
+}
+
+function textFormatFromBlock(block: TemplateBlock): TextFormatState {
+  return {
+    blockId: block.id,
+    fontFamily: normalizeFontFamily(block.fontFamily),
+    fontSize: clamp(Number(block.fontSize) || 12, 8, 72),
+    color: normalizeHex(block.color, "#111827"),
+    fontWeight: block.fontWeight === "700" ? "700" : "400",
+    italic: block.italic === true,
+    underline: block.underline === true,
+  };
 }
 
 function normalizeItemColumns(
@@ -1167,6 +1241,69 @@ function editorSelectionOffsets(editor: HTMLDivElement) {
   };
 }
 
+function selectedStyleElement(editor: HTMLDivElement) {
+  const selection = window.getSelection();
+
+  if (!selection?.rangeCount) {
+    return editor;
+  }
+
+  const range = selection.getRangeAt(0);
+
+  if (!editor.contains(range.commonAncestorContainer)) {
+    return editor;
+  }
+
+  let node = range.startContainer;
+
+  if (node === editor) {
+    node =
+      editor.childNodes[
+        Math.min(range.startOffset, editor.childNodes.length - 1)
+      ] || editor;
+  }
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    return (node.parentElement || editor) as HTMLElement;
+  }
+
+  return (
+    (node as HTMLElement).closest?.(
+      "[data-template-token], span, b, strong, i, em, u",
+    ) ||
+    (node as HTMLElement) ||
+    editor
+  );
+}
+
+function textFormatFromEditorSelection(
+  editor: HTMLDivElement,
+  block: TemplateBlock,
+): TextFormatState {
+  const element = selectedStyleElement(editor);
+  const computed = window.getComputedStyle(element);
+  const fontWeight = Number.parseInt(computed.fontWeight, 10);
+
+  return {
+    blockId: block.id,
+    fontFamily: canonicalFontFamily(computed.fontFamily || block.fontFamily),
+    fontSize: clamp(
+      Math.round(Number.parseFloat(computed.fontSize)) ||
+        Number(block.fontSize) ||
+        12,
+      8,
+      72,
+    ),
+    color: cssColorToHex(computed.color, block.color || "#111827"),
+    fontWeight:
+      computed.fontWeight === "bold" || fontWeight >= 600 ? "700" : "400",
+    italic: computed.fontStyle === "italic",
+    underline:
+      computed.textDecorationLine.includes("underline") ||
+      computed.textDecoration.includes("underline"),
+  };
+}
+
 function textNodeAtOffset(editor: HTMLDivElement, offset: number) {
   const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
   let remaining = Math.max(0, offset);
@@ -1366,6 +1503,8 @@ function TemplateDesigner({
   );
   const [mentionMenu, setMentionMenu] = useState<MentionMenuState | null>(null);
   const [pageSetupOpen, setPageSetupOpen] = useState(false);
+  const [activeTextFormat, setActiveTextFormat] =
+    useState<TextFormatState | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const inlineTextRef = useRef<HTMLDivElement | null>(null);
   const inspectorTextRef = useRef<HTMLDivElement | null>(null);
@@ -1403,6 +1542,12 @@ function TemplateDesigner({
   const dirty =
     name !== template.name ||
     JSON.stringify(design) !== JSON.stringify(template.design);
+  const toolbarTextFormat =
+    activeTextFormat?.blockId === selectedBlock?.id
+      ? activeTextFormat
+      : selectedBlock
+        ? textFormatFromBlock(selectedBlock)
+        : null;
 
   useEffect(() => {
     const nextDesign = copyDesign(template.design);
@@ -1417,6 +1562,7 @@ function TemplateDesigner({
     setEditingTextBlockId(null);
     setEditingItemsBlockId(null);
     setMentionMenu(null);
+    setActiveTextFormat(null);
     setSelectedId(nextDesign.blocks[0]?.id || "");
   }, [template.design, template.name]);
 
@@ -1527,6 +1673,31 @@ function TemplateDesigner({
     setSelectedId(block.id);
   }
 
+  function addTextBlockWithField(field: TemplateField) {
+    const token = tokenForField(field.value);
+    const block = normalizeBlockGeometry(
+      {
+        ...createTemplateBlock(
+          "text",
+          field.value,
+          design.blocks.length,
+          design.page,
+        ),
+        text: token,
+        textHtml: escapeHtml(token),
+      },
+      design.page,
+    );
+
+    setDesign((current) => ({
+      ...current,
+      blocks: [...current.blocks, block],
+    }));
+    setEditingTextBlockId(block.id);
+    setEditingItemsBlockId(null);
+    setSelectedId(block.id);
+  }
+
   function duplicateSelectedBlock() {
     if (!selectedBlock) {
       return;
@@ -1598,6 +1769,7 @@ function TemplateDesigner({
     setEditingTextBlockId(null);
     setEditingItemsBlockId(null);
     setMentionMenu(null);
+    setActiveTextFormat(null);
     setSelectedId(nextDesign.blocks[0]?.id || "");
   }
 
@@ -1621,6 +1793,7 @@ function TemplateDesigner({
     setEditingTextBlockId(null);
     setEditingItemsBlockId(null);
     setMentionMenu(null);
+    setActiveTextFormat(null);
     setSelectedId(nextDesign.blocks[0]?.id || "");
   }
 
@@ -1766,6 +1939,9 @@ function TemplateDesigner({
 
   function handleStageWheel(event: WheelEvent<HTMLDivElement>) {
     if (!(event.metaKey || event.ctrlKey)) {
+      event.currentTarget.scrollLeft += event.deltaX;
+      event.currentTarget.scrollTop += event.deltaY;
+      event.preventDefault();
       return;
     }
 
@@ -1834,7 +2010,7 @@ function TemplateDesigner({
     }
 
     if (!selectedBlock || selectedBlock.type !== "text") {
-      addBlock("field", field.value);
+      addTextBlockWithField(field);
       return;
     }
 
@@ -2052,6 +2228,9 @@ function TemplateDesigner({
 
   function rememberRichSelection(editor: HTMLDivElement) {
     const offsets = editorSelectionOffsets(editor);
+    const block = design.blocks.find(
+      (item) => item.id === editor.dataset.blockId,
+    );
 
     if (!offsets) {
       return;
@@ -2062,6 +2241,10 @@ function TemplateDesigner({
       blockId: editor.dataset.blockId || "",
       ...offsets,
     };
+
+    if (block?.type === "text" && !editor.closest(".template-inspector")) {
+      setActiveTextFormat(textFormatFromEditorSelection(editor, block));
+    }
   }
 
   function restoreRichSelection(editor: HTMLDivElement) {
@@ -2096,11 +2279,17 @@ function TemplateDesigner({
 
   function applyRichTextCommand(command: string) {
     if (command === "bold") {
-      wrapRichSelection({ fontWeight: "700" });
+      wrapRichSelection({
+        fontWeight: toolbarTextFormat?.fontWeight === "700" ? "400" : "700",
+      });
     } else if (command === "italic") {
-      wrapRichSelection({ fontStyle: "italic" });
+      wrapRichSelection({
+        fontStyle: toolbarTextFormat?.italic ? "normal" : "italic",
+      });
     } else if (command === "underline") {
-      wrapRichSelection({ textDecoration: "underline" });
+      wrapRichSelection({
+        textDecoration: toolbarTextFormat?.underline ? "none" : "underline",
+      });
     }
   }
 
@@ -2164,6 +2353,7 @@ function TemplateDesigner({
       }
 
       updateBlock(block.id, patch);
+      setActiveTextFormat(textFormatFromBlock({ ...block, ...patch }));
       return;
     }
 
@@ -2188,7 +2378,7 @@ function TemplateDesigner({
         return;
       }
 
-      const blockPatch = {
+      const blockPatch: Partial<TemplateBlock> = {
         ...(style.fontFamily ? { fontFamily: style.fontFamily } : {}),
         ...(style.fontSize
           ? { fontSize: Number.parseInt(style.fontSize, 10) }
@@ -2204,6 +2394,7 @@ function TemplateDesigner({
       };
 
       updateBlock(block.id, blockPatch);
+      setActiveTextFormat(textFormatFromBlock({ ...block, ...blockPatch }));
       Object.assign(editor.style, style);
 
       selectEditorContents(editor);
@@ -2321,6 +2512,7 @@ function TemplateDesigner({
     setEditingTextBlockId(null);
     setEditingItemsBlockId(null);
     setMentionMenu(null);
+    setActiveTextFormat(null);
     setSelectedId((current) =>
       nextDesign.blocks.some((block) => block.id === current)
         ? current
@@ -2568,7 +2760,7 @@ function TemplateDesigner({
           <label>
             <span>Font</span>
             <select
-              value={selectedBlock?.fontFamily || FONT_FAMILIES[0].value}
+              value={toolbarTextFormat?.fontFamily || FONT_FAMILIES[0].value}
               onChange={(event) =>
                 applyRichTextFontFamily(event.currentTarget.value)
               }
@@ -2583,24 +2775,25 @@ function TemplateDesigner({
           <label className="word-size-control">
             <span>Size</span>
             <select
-              value={String(selectedBlock?.fontSize || 12)}
+              value={String(toolbarTextFormat?.fontSize || 12)}
               onChange={(event) =>
                 applyRichTextFontSize(event.currentTarget.value)
               }
             >
-              {[8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48].map(
-                (size) => (
-                  <option key={size} value={size}>
-                    {size}
-                  </option>
-                ),
-              )}
+              {RICH_TEXT_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
             </select>
           </label>
           <span className="word-button-group">
             <button
               type="button"
               title="Bold"
+              className={
+                toolbarTextFormat?.fontWeight === "700" ? "active" : ""
+              }
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => applyRichTextCommand("bold")}
             >
@@ -2609,6 +2802,7 @@ function TemplateDesigner({
             <button
               type="button"
               title="Italic"
+              className={toolbarTextFormat?.italic ? "active" : ""}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => applyRichTextCommand("italic")}
             >
@@ -2617,6 +2811,7 @@ function TemplateDesigner({
             <button
               type="button"
               title="Underline"
+              className={toolbarTextFormat?.underline ? "active" : ""}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => applyRichTextCommand("underline")}
             >
@@ -2627,7 +2822,7 @@ function TemplateDesigner({
             <span>Color</span>
             <input
               type="color"
-              value={normalizeHex(selectedBlock?.color, "#111827")}
+              value={toolbarTextFormat?.color || "#111827"}
               onChange={(event) =>
                 wrapRichSelection({ color: event.currentTarget.value })
               }
