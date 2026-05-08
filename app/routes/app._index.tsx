@@ -51,9 +51,6 @@ const MIN_BLOCK_WIDTH = 32;
 const MIN_BLOCK_HEIGHT = 24;
 const MIN_TEMPLATE_ZOOM = 0.35;
 const MAX_TEMPLATE_ZOOM = 1.4;
-const MIN_APP_SIDEBAR_WIDTH = 260;
-const DEFAULT_APP_SIDEBAR_WIDTH = 332;
-const MIN_TEMPLATE_PANEL_WIDTH = 720;
 const PAGE_SIZE_OPTIONS = [
   { value: "letter", label: "Letter", width: 816, height: 1056 },
   { value: "a4", label: "A4", width: 794, height: 1123 },
@@ -70,11 +67,71 @@ const FONT_FAMILIES = [
   { label: "Tahoma", value: "Tahoma, Geneva, sans-serif" },
 ];
 const DEFAULT_ITEM_COLUMNS = [
-  { key: "quantity", label: "Qty", enabled: true, width: 54 },
-  { key: "image", label: "Image", enabled: true, width: 72 },
-  { key: "title", label: "Product", enabled: true, width: 260 },
-  { key: "variant", label: "Variant", enabled: false, width: 140 },
-  { key: "sku", label: "SKU", enabled: true, width: 120 },
+  {
+    key: "quantity",
+    label: "Qty",
+    enabled: true,
+    width: 54,
+    align: "left",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 11,
+    valueFontWeight: "400",
+    valueColor: "#111827",
+  },
+  {
+    key: "image",
+    label: "Image",
+    enabled: true,
+    width: 72,
+    align: "left",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 11,
+    valueFontWeight: "400",
+    valueColor: "#111827",
+  },
+  {
+    key: "title",
+    label: "Product",
+    enabled: true,
+    width: 260,
+    align: "left",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 11,
+    valueFontWeight: "700",
+    valueColor: "#111827",
+  },
+  {
+    key: "variant",
+    label: "Variant",
+    enabled: false,
+    width: 140,
+    align: "left",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 11,
+    valueFontWeight: "400",
+    valueColor: "#111827",
+  },
+  {
+    key: "sku",
+    label: "SKU",
+    enabled: true,
+    width: 120,
+    align: "left",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 10,
+    valueFontWeight: "400",
+    valueColor: "#6b7280",
+  },
 ] as const;
 type ItemColumnKey = (typeof DEFAULT_ITEM_COLUMNS)[number]["key"];
 type EditorItemColumn = {
@@ -82,6 +139,13 @@ type EditorItemColumn = {
   label: string;
   enabled: boolean;
   width: number;
+  align: "left" | "center" | "right";
+  labelFontSize: number;
+  labelFontWeight: string;
+  labelColor: string;
+  valueFontSize: number;
+  valueFontWeight: string;
+  valueColor: string;
 };
 
 const TEMPLATE_FIELD_GROUPS: { label: string; fields: TemplateField[] }[] = [
@@ -672,6 +736,24 @@ function normalizeItemColumns(
         label: column.label || fallback.label,
         enabled: column.enabled !== false,
         width: clamp(Number(column.width || fallback.width), 32, 420),
+        align:
+          column.align === "center" || column.align === "right"
+            ? column.align
+            : fallback.align,
+        labelFontSize: clamp(
+          Number(column.labelFontSize || fallback.labelFontSize),
+          7,
+          32,
+        ),
+        labelFontWeight: column.labelFontWeight === "400" ? "400" : "700",
+        labelColor: normalizeHex(column.labelColor, fallback.labelColor),
+        valueFontSize: clamp(
+          Number(column.valueFontSize || fallback.valueFontSize),
+          7,
+          48,
+        ),
+        valueFontWeight: column.valueFontWeight === "700" ? "700" : "400",
+        valueColor: normalizeHex(column.valueColor, fallback.valueColor),
       };
     })
     .filter((column): column is EditorItemColumn => Boolean(column));
@@ -875,7 +957,7 @@ function SampleItemsTable({ block }: { block: TemplateBlock }) {
       <thead>
         <tr>
           {columns.map((column) => (
-            <th key={column.key} style={{ width: column.width }}>
+            <th key={column.key} style={itemColumnHeaderStyle(column)}>
               {column.label}
             </th>
           ))}
@@ -885,7 +967,9 @@ function SampleItemsTable({ block }: { block: TemplateBlock }) {
         {SAMPLE_LINES.map((line) => (
           <tr key={line.sku}>
             {columns.map((column) => (
-              <td key={column.key}>{renderSampleItemCell(column.key, line)}</td>
+              <td key={column.key} style={itemColumnValueStyle(column)}>
+                {renderSampleItemCell(column.key, line)}
+              </td>
             ))}
           </tr>
         ))}
@@ -915,6 +999,25 @@ function renderSampleItemCell(
   }
 
   return <strong>{line.title}</strong>;
+}
+
+function itemColumnHeaderStyle(column: EditorItemColumn): CSSProperties {
+  return {
+    width: column.width,
+    color: column.labelColor,
+    fontSize: column.labelFontSize,
+    fontWeight: column.labelFontWeight,
+    textAlign: column.align,
+  };
+}
+
+function itemColumnValueStyle(column: EditorItemColumn): CSSProperties {
+  return {
+    color: column.valueColor,
+    fontSize: column.valueFontSize,
+    fontWeight: column.valueFontWeight,
+    textAlign: column.align,
+  };
 }
 
 function TemplateBlockPreview({ block }: { block: TemplateBlock }) {
@@ -953,6 +1056,7 @@ function RichTextBox({
   onKeyDown,
   onFocus,
   onBlur,
+  onSelectionChange,
   style,
 }: {
   block: TemplateBlock;
@@ -965,6 +1069,7 @@ function RichTextBox({
   ) => void;
   onFocus?: (element: HTMLDivElement, block: TemplateBlock) => void;
   onBlur?: (element: HTMLDivElement, block: TemplateBlock) => void;
+  onSelectionChange?: (element: HTMLDivElement, block: TemplateBlock) => void;
   style?: CSSProperties;
 }) {
   const localRef = useRef<HTMLDivElement | null>(null);
@@ -993,7 +1098,9 @@ function RichTextBox({
       onDoubleClick={(event) => event.stopPropagation()}
       onFocus={(event) => onFocus?.(event.currentTarget, block)}
       onInput={(event) => onInput(event, block)}
+      onKeyUp={(event) => onSelectionChange?.(event.currentTarget, block)}
       onKeyDown={(event) => onKeyDown(event, block)}
+      onMouseUp={(event) => onSelectionChange?.(event.currentTarget, block)}
       onPointerDown={(event) => event.stopPropagation()}
       ref={(element) => {
         localRef.current = element;
@@ -1036,6 +1143,7 @@ function TemplateDesigner({
   const inlineTextRef = useRef<HTMLDivElement | null>(null);
   const inspectorTextRef = useRef<HTMLDivElement | null>(null);
   const activeRichEditorRef = useRef<HTMLDivElement | null>(null);
+  const richSelectionRef = useRef<Range | null>(null);
   const operationRef = useRef<CanvasOperation | null>(null);
   const selectedBlock = useMemo(
     () => design.blocks.find((block) => block.id === selectedId) || null,
@@ -1044,6 +1152,20 @@ function TemplateDesigner({
   const selectedIndex = selectedBlock
     ? design.blocks.findIndex((block) => block.id === selectedBlock.id)
     : -1;
+  const [selectedItemColumnKey, setSelectedItemColumnKey] =
+    useState<ItemColumnKey>("title");
+  const selectedItemColumns = useMemo(
+    () =>
+      selectedBlock?.type === "items"
+        ? normalizeItemColumns(selectedBlock.itemColumns)
+        : [],
+    [selectedBlock],
+  );
+  const selectedItemColumn =
+    selectedItemColumns.find((column) => column.key === selectedItemColumnKey) ||
+    selectedItemColumns.find((column) => column.enabled) ||
+    selectedItemColumns[0] ||
+    null;
   const dirty =
     name !== template.name ||
     JSON.stringify(design) !== JSON.stringify(template.design);
@@ -1074,6 +1196,16 @@ function TemplateDesigner({
       inlineTextRef.current?.focus();
     });
   }, [design.blocks, editingTextBlockId]);
+
+  useEffect(() => {
+    if (
+      selectedBlock?.type === "items" &&
+      selectedItemColumns.length &&
+      !selectedItemColumns.some((column) => column.key === selectedItemColumnKey)
+    ) {
+      setSelectedItemColumnKey(selectedItemColumns[0].key);
+    }
+  }, [selectedBlock?.type, selectedItemColumnKey, selectedItemColumns]);
 
   function updateBlock(id: string, patch: Partial<TemplateBlock>) {
     setDesign((current) => ({
@@ -1460,34 +1592,88 @@ function TemplateDesigner({
     block: TemplateBlock,
   ) {
     activeRichEditorRef.current = event.currentTarget;
+    rememberRichSelection(event.currentTarget);
     syncRichTextElement(event.currentTarget, block);
   }
 
-  function applyRichTextCommand(command: string, value?: string) {
+  function rememberRichSelection(editor: HTMLDivElement) {
+    const selection = window.getSelection();
+
+    if (!selection?.rangeCount || !editor.contains(selection.anchorNode)) {
+      return;
+    }
+
+    activeRichEditorRef.current = editor;
+    richSelectionRef.current = selection.getRangeAt(0).cloneRange();
+  }
+
+  function restoreRichSelection(editor: HTMLDivElement) {
+    const selection = window.getSelection();
+    const range = richSelectionRef.current;
+
+    if (!selection) {
+      editor.focus();
+      return;
+    }
+
+    if (!range || !editor.contains(range.commonAncestorContainer)) {
+      const fallbackRange = document.createRange();
+
+      fallbackRange.selectNodeContents(editor);
+      selection.removeAllRanges();
+      selection.addRange(fallbackRange);
+      editor.focus();
+      return;
+    }
+
+    selection.removeAllRanges();
+    selection.addRange(range);
+    editor.focus();
+  }
+
+  function applyRichTextCommand(command: string) {
     const block = selectedBlock;
-    const editor = activeRichEditorRef.current;
+    const editor = activeRichEditorRef.current || inspectorTextRef.current;
 
     if (!block || block.type !== "text" || !editor) {
       return;
     }
 
-    editor.focus();
-    document.execCommand(command, false, value);
+    restoreRichSelection(editor);
+    document.execCommand(command, false);
+    rememberRichSelection(editor);
     syncRichTextElement(editor, block);
   }
 
-  function wrapRichSelection(style: Partial<CSSStyleDeclaration>) {
+  function wrapRichSelection(style: Partial<CSSStyleDeclaration>, fallback = "") {
     const block = selectedBlock;
-    const editor = activeRichEditorRef.current;
+    const editor = activeRichEditorRef.current || inspectorTextRef.current;
+
+    if (!block || block.type !== "text" || !editor) {
+      return;
+    }
+
+    restoreRichSelection(editor);
     const selection = window.getSelection();
 
-    if (!block || block.type !== "text" || !editor || !selection?.rangeCount) {
+    if (!selection?.rangeCount) {
       return;
     }
 
     const range = selection.getRangeAt(0);
 
-    if (range.collapsed || !editor.contains(range.commonAncestorContainer)) {
+    if (!editor.contains(range.commonAncestorContainer)) {
+      return;
+    }
+
+    if (range.collapsed && fallback) {
+      document.execCommand("insertText", false, fallback);
+      rememberRichSelection(editor);
+      syncRichTextElement(editor, block);
+      return;
+    }
+
+    if (range.collapsed) {
       return;
     }
 
@@ -1506,6 +1692,7 @@ function TemplateDesigner({
 
     selection.removeAllRanges();
     selection.selectAllChildren(span);
+    rememberRichSelection(editor);
     syncRichTextElement(editor, block);
   }
 
@@ -1882,9 +2069,11 @@ function TemplateDesigner({
                           }}
                           onFocus={(element) => {
                             activeRichEditorRef.current = element;
+                            rememberRichSelection(element);
                           }}
                           onInput={handleRichTextInput}
                           onKeyDown={handleRichTextKeyDown}
+                          onSelectionChange={rememberRichSelection}
                           style={richTextEditorStyle(block)}
                         />
                       ) : editingItems ? (
@@ -2125,9 +2314,11 @@ function TemplateDesigner({
                     }}
                     onFocus={(element) => {
                       activeRichEditorRef.current = element;
+                      rememberRichSelection(element);
                     }}
                     onInput={handleRichTextInput}
                     onKeyDown={handleRichTextKeyDown}
+                    onSelectionChange={rememberRichSelection}
                     style={richTextEditorStyle(selectedBlock)}
                   />
                 </div>
@@ -2167,61 +2358,223 @@ function TemplateDesigner({
               {selectedBlock.type === "items" ? (
                 <div className="item-column-editor">
                   <div className="field-label">Item columns</div>
-                  {normalizeItemColumns(selectedBlock.itemColumns).map(
-                    (column, index, columns) => (
-                      <div className="item-column-row" key={column.key}>
-                        <label className="checkbox-row compact-checkbox">
-                          <input
-                            type="checkbox"
-                            checked={column.enabled}
-                            onChange={(event) =>
-                              toggleItemColumn(
-                                column.key,
-                                event.currentTarget.checked,
-                              )
-                            }
-                          />
-                          <span>{column.key}</span>
-                        </label>
+                  <div className="item-column-list">
+                    {selectedItemColumns.map((column, index, columns) => (
+                      <div
+                        className={
+                          selectedItemColumn?.key === column.key
+                            ? "item-column-pill selected"
+                            : "item-column-pill"
+                        }
+                        key={column.key}
+                      >
                         <input
-                          aria-label={`${column.key} label`}
-                          value={column.label}
+                          aria-label={`Show ${column.key}`}
+                          type="checkbox"
+                          checked={column.enabled}
                           onChange={(event) =>
-                            updateItemColumn(column.key, {
-                              label: event.currentTarget.value,
-                            })
+                            toggleItemColumn(
+                              column.key,
+                              event.currentTarget.checked,
+                            )
                           }
                         />
-                        <input
-                          aria-label={`${column.key} width`}
-                          min="32"
-                          type="number"
-                          value={column.width}
-                          onChange={(event) =>
-                            updateItemColumn(column.key, {
-                              width: Number(event.currentTarget.value),
-                            })
-                          }
-                        />
-                        <div className="item-column-actions">
+                        <button
+                          className="item-column-select"
+                          type="button"
+                          onClick={() => setSelectedItemColumnKey(column.key)}
+                        >
+                          <span>{column.label || column.key}</span>
+                          <small>{column.width}px</small>
+                        </button>
+                        <span className="item-column-actions">
                           <button
                             type="button"
                             disabled={index === 0}
-                            onClick={() => moveItemColumn(column.key, -1)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              moveItemColumn(column.key, -1);
+                            }}
                           >
-                            Up
+                            ↑
                           </button>
                           <button
                             type="button"
                             disabled={index === columns.length - 1}
-                            onClick={() => moveItemColumn(column.key, 1)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              moveItemColumn(column.key, 1);
+                            }}
                           >
-                            Down
+                            ↓
                           </button>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {selectedItemColumn ? (
+                    <div className="item-column-detail">
+                      <div className="field-label">
+                        Editing {selectedItemColumn.key}
+                      </div>
+                      <label>
+                        <span>Label</span>
+                        <input
+                          value={selectedItemColumn.label}
+                          onChange={(event) =>
+                            updateItemColumn(selectedItemColumn.key, {
+                              label: event.currentTarget.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <div className="geometry-grid">
+                        <label>
+                          <span>Width</span>
+                          <input
+                            min="32"
+                            type="number"
+                            value={selectedItemColumn.width}
+                            onChange={(event) =>
+                              updateItemColumn(selectedItemColumn.key, {
+                                width: Number(event.currentTarget.value),
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          <span>Align</span>
+                          <select
+                            value={selectedItemColumn.align}
+                            onChange={(event) =>
+                              updateItemColumn(selectedItemColumn.key, {
+                                align: event.currentTarget
+                                  .value as EditorItemColumn["align"],
+                              })
+                            }
+                          >
+                            <option value="left">Left</option>
+                            <option value="center">Center</option>
+                            <option value="right">Right</option>
+                          </select>
+                        </label>
+                      </div>
+                      <div className="item-style-grid">
+                        <div>
+                          <div className="field-label">Header text</div>
+                          <div className="style-grid">
+                            <label>
+                              <span>Size</span>
+                              <input
+                                min="7"
+                                type="number"
+                                value={selectedItemColumn.labelFontSize}
+                                onChange={(event) =>
+                                  updateItemColumn(selectedItemColumn.key, {
+                                    labelFontSize: Number(
+                                      event.currentTarget.value,
+                                    ),
+                                  })
+                                }
+                              />
+                            </label>
+                            <label>
+                              <span>Color</span>
+                              <input
+                                type="color"
+                                value={selectedItemColumn.labelColor}
+                                onChange={(event) =>
+                                  updateItemColumn(selectedItemColumn.key, {
+                                    labelColor: event.currentTarget.value,
+                                  })
+                                }
+                              />
+                            </label>
+                          </div>
+                          <div className="format-button-row">
+                            <button
+                              aria-pressed={
+                                selectedItemColumn.labelFontWeight === "700"
+                              }
+                              className={
+                                selectedItemColumn.labelFontWeight === "700"
+                                  ? "active"
+                                  : ""
+                              }
+                              type="button"
+                              onClick={() =>
+                                updateItemColumn(selectedItemColumn.key, {
+                                  labelFontWeight:
+                                    selectedItemColumn.labelFontWeight === "700"
+                                      ? "400"
+                                      : "700",
+                                })
+                              }
+                            >
+                              B
+                            </button>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="field-label">Row text</div>
+                          <div className="style-grid">
+                            <label>
+                              <span>Size</span>
+                              <input
+                                min="7"
+                                type="number"
+                                value={selectedItemColumn.valueFontSize}
+                                onChange={(event) =>
+                                  updateItemColumn(selectedItemColumn.key, {
+                                    valueFontSize: Number(
+                                      event.currentTarget.value,
+                                    ),
+                                  })
+                                }
+                              />
+                            </label>
+                            <label>
+                              <span>Color</span>
+                              <input
+                                type="color"
+                                value={selectedItemColumn.valueColor}
+                                onChange={(event) =>
+                                  updateItemColumn(selectedItemColumn.key, {
+                                    valueColor: event.currentTarget.value,
+                                  })
+                                }
+                              />
+                            </label>
+                          </div>
+                          <div className="format-button-row">
+                            <button
+                              aria-pressed={
+                                selectedItemColumn.valueFontWeight === "700"
+                              }
+                              className={
+                                selectedItemColumn.valueFontWeight === "700"
+                                  ? "active"
+                                  : ""
+                              }
+                              type="button"
+                              onClick={() =>
+                                updateItemColumn(selectedItemColumn.key, {
+                                  valueFontWeight:
+                                    selectedItemColumn.valueFontWeight === "700"
+                                      ? "400"
+                                      : "700",
+                                })
+                              }
+                            >
+                              B
+                            </button>
+                          </div>
                         </div>
                       </div>
-                    ),
-                  )}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               <div className="geometry-grid">
@@ -2465,7 +2818,6 @@ export default function OrderPrinterDashboard() {
   const defaultPrinterName =
     data.rule?.printerName || data.printers[0]?.name || "";
   const canSave = Boolean(defaultLocationId && defaultPrinterName);
-  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_APP_SIDEBAR_WIDTH);
   const agentConfig = JSON.stringify(
     {
       appUrl: data.appUrl,
@@ -2476,44 +2828,6 @@ export default function OrderPrinterDashboard() {
     null,
     2,
   );
-
-  function startAppSidebarResize(event: PointerEvent<HTMLElement>) {
-    const splitter = event.currentTarget;
-    const body = splitter.parentElement;
-
-    if (!body) {
-      return;
-    }
-
-    const bodyRect = body.getBoundingClientRect();
-    const maxWidth = Math.max(
-      MIN_APP_SIDEBAR_WIDTH,
-      bodyRect.width - MIN_TEMPLATE_PANEL_WIDTH,
-    );
-
-    function resize(moveEvent: globalThis.PointerEvent) {
-      setSidebarWidth(
-        clamp(
-          moveEvent.clientX - bodyRect.left,
-          MIN_APP_SIDEBAR_WIDTH,
-          maxWidth,
-        ),
-      );
-    }
-
-    function stopResize(upEvent: globalThis.PointerEvent) {
-      splitter.releasePointerCapture(upEvent.pointerId);
-      splitter.removeEventListener("pointermove", resize);
-      splitter.removeEventListener("pointerup", stopResize);
-      splitter.removeEventListener("pointercancel", stopResize);
-    }
-
-    splitter.setPointerCapture(event.pointerId);
-    splitter.addEventListener("pointermove", resize);
-    splitter.addEventListener("pointerup", stopResize);
-    splitter.addEventListener("pointercancel", stopResize);
-    event.preventDefault();
-  }
 
   return (
     <main className="order-printer-app">
@@ -2529,10 +2843,7 @@ export default function OrderPrinterDashboard() {
         ) : null}
       </header>
 
-      <div
-        className="app-body"
-        style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
-      >
+      <div className="app-body">
         <aside className="app-sidebar">
           <section className="app-card">
             <div className="app-card-header">Automation rule</div>
@@ -2740,26 +3051,6 @@ export default function OrderPrinterDashboard() {
             )}
           </section>
         </aside>
-
-        <button
-          aria-label="Resize operations panel"
-          className="app-splitter"
-          onKeyDown={(event) => {
-            if (event.key === "ArrowLeft") {
-              event.preventDefault();
-              setSidebarWidth((current) =>
-                clamp(current - 24, MIN_APP_SIDEBAR_WIDTH, 620),
-              );
-            } else if (event.key === "ArrowRight") {
-              event.preventDefault();
-              setSidebarWidth((current) =>
-                clamp(current + 24, MIN_APP_SIDEBAR_WIDTH, 620),
-              );
-            }
-          }}
-          onPointerDown={startAppSidebarResize}
-          type="button"
-        />
 
         <section className="template-app-panel">
           <TemplateDesigner

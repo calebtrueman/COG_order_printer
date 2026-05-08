@@ -177,8 +177,30 @@ export type ItemColumn = {
   label: string;
   enabled: boolean;
   width?: number;
+  align?: "left" | "center" | "right";
+  labelFontSize?: number;
+  labelFontWeight?: string;
+  labelColor?: string;
+  valueFontSize?: number;
+  valueFontWeight?: string;
+  valueColor?: string;
 };
-type NormalizedItemColumn = ItemColumn & { width: number };
+type NormalizedItemColumn = Required<
+  Pick<
+    ItemColumn,
+    | "key"
+    | "label"
+    | "enabled"
+    | "width"
+    | "align"
+    | "labelFontSize"
+    | "labelFontWeight"
+    | "labelColor"
+    | "valueFontSize"
+    | "valueFontWeight"
+    | "valueColor"
+  >
+>;
 
 export type TemplateBlock = {
   id: string;
@@ -269,11 +291,71 @@ const TEMPLATE_FONT_FAMILIES = new Set([
   "Tahoma, Geneva, sans-serif",
 ]);
 const DEFAULT_ITEM_COLUMNS: NormalizedItemColumn[] = [
-  { key: "quantity", label: "Qty", enabled: true, width: 54 },
-  { key: "image", label: "Image", enabled: true, width: 72 },
-  { key: "title", label: "Product", enabled: true, width: 260 },
-  { key: "variant", label: "Variant", enabled: false, width: 140 },
-  { key: "sku", label: "SKU", enabled: true, width: 120 },
+  {
+    key: "quantity",
+    label: "Qty",
+    enabled: true,
+    width: 54,
+    align: "left",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 11,
+    valueFontWeight: "400",
+    valueColor: "#111827",
+  },
+  {
+    key: "image",
+    label: "Image",
+    enabled: true,
+    width: 72,
+    align: "left",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 11,
+    valueFontWeight: "400",
+    valueColor: "#111827",
+  },
+  {
+    key: "title",
+    label: "Product",
+    enabled: true,
+    width: 260,
+    align: "left",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 11,
+    valueFontWeight: "700",
+    valueColor: "#111827",
+  },
+  {
+    key: "variant",
+    label: "Variant",
+    enabled: false,
+    width: 140,
+    align: "left",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 11,
+    valueFontWeight: "400",
+    valueColor: "#111827",
+  },
+  {
+    key: "sku",
+    label: "SKU",
+    enabled: true,
+    width: 120,
+    align: "left",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 10,
+    valueFontWeight: "400",
+    valueColor: "#6b7280",
+  },
 ];
 
 const DEFAULT_TEMPLATE_DESIGN: TemplateDesign = {
@@ -717,6 +799,29 @@ function normalizedItemColumns(value: unknown): NormalizedItemColumn[] {
             : fallback?.label || key,
         enabled: column.enabled !== false,
         width: boundedNumber(column.width, fallback?.width || 120, 32, 420),
+        align: normalizedAlign(column.align),
+        labelFontSize: boundedNumber(
+          column.labelFontSize,
+          fallback?.labelFontSize || 10,
+          7,
+          32,
+        ),
+        labelFontWeight: column.labelFontWeight === "400" ? "400" : "700",
+        labelColor: normalizedColor(
+          column.labelColor,
+          fallback?.labelColor || "#374151",
+        ),
+        valueFontSize: boundedNumber(
+          column.valueFontSize,
+          fallback?.valueFontSize || 11,
+          7,
+          48,
+        ),
+        valueFontWeight: column.valueFontWeight === "700" ? "700" : "400",
+        valueColor: normalizedColor(
+          column.valueColor,
+          fallback?.valueColor || "#111827",
+        ),
       };
     })
     .filter((column): column is NormalizedItemColumn => Boolean(column));
@@ -1644,7 +1749,7 @@ function renderItemsBlock(block: TemplateBlock, lines: PackingSlipLine[]) {
             ${columns
               .map(
                 (column) =>
-                  `<th style="${column.width ? `width:${column.width}px` : ""}">${escapeHtml(column.label)}</th>`,
+                  `<th style="${itemColumnHeaderStyle(column)}">${escapeHtml(column.label)}</th>`,
               )
               .join("")}
           </tr>
@@ -1655,13 +1760,34 @@ function renderItemsBlock(block: TemplateBlock, lines: PackingSlipLine[]) {
   `;
 }
 
+function itemColumnHeaderStyle(column: NormalizedItemColumn) {
+  return [
+    column.width ? `width:${column.width}px` : "",
+    `font-size:${boundedNumber(column.labelFontSize, 10, 7, 32)}px`,
+    `font-weight:${column.labelFontWeight === "400" ? "400" : "700"}`,
+    `color:${normalizedColor(column.labelColor, "#374151")}`,
+    `text-align:${normalizedAlign(column.align)}`,
+  ]
+    .filter(Boolean)
+    .join(";");
+}
+
+function itemColumnValueStyle(column: ItemColumn) {
+  return [
+    `font-size:${boundedNumber(column.valueFontSize, 11, 7, 48)}px`,
+    `font-weight:${column.valueFontWeight === "700" ? "700" : "400"}`,
+    `color:${normalizedColor(column.valueColor, "#111827")}`,
+    `text-align:${normalizedAlign(column.align)}`,
+  ].join(";");
+}
+
 function renderItemCell(column: ItemColumn, line: PackingSlipLine) {
   if (column.key === "quantity") {
-    return `<td class="qty">${escapeHtml(line.quantity)}</td>`;
+    return `<td class="qty" style="${itemColumnValueStyle(column)}">${escapeHtml(line.quantity)}</td>`;
   }
 
   if (column.key === "image") {
-    return `<td class="item-image-cell">${
+    return `<td class="item-image-cell" style="${itemColumnValueStyle(column)}">${
       line.imageUrl
         ? `<img src="${escapeHtml(line.imageUrl)}" alt="${escapeHtml(line.imageAlt || lineTitle(line))}">`
         : ""
@@ -1669,18 +1795,18 @@ function renderItemCell(column: ItemColumn, line: PackingSlipLine) {
   }
 
   if (column.key === "title") {
-    return `<td><strong>${escapeHtml(line.title)}</strong></td>`;
+    return `<td style="${itemColumnValueStyle(column)}">${escapeHtml(line.title)}</td>`;
   }
 
   if (column.key === "variant") {
-    return `<td>${escapeHtml(
+    return `<td style="${itemColumnValueStyle(column)}">${escapeHtml(
       line.variantTitle && line.variantTitle !== "Default Title"
         ? line.variantTitle
         : "",
     )}</td>`;
   }
 
-  return `<td>${escapeHtml(line.sku || "")}</td>`;
+  return `<td style="${itemColumnValueStyle(column)}">${escapeHtml(line.sku || "")}</td>`;
 }
 
 function safeImageUrl(value: string | undefined) {

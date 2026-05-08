@@ -53,10 +53,8 @@ body {
 
 .app-body {
   display: grid;
-  gap: 0;
-  grid-template-columns:
-    minmax(260px, var(--sidebar-width, 332px)) 10px
-    minmax(0, 1fr);
+  gap: 10px;
+  grid-template-rows: minmax(128px, 240px) minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
   padding: 10px;
@@ -66,34 +64,10 @@ body {
 .app-sidebar {
   display: grid;
   gap: 10px;
+  grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr) minmax(320px, 1.15fr) minmax(320px, 1.15fr);
   min-height: 0;
-  overflow: auto;
-}
-
-.app-splitter {
-  align-items: stretch;
-  background: transparent;
-  border: 0;
-  cursor: col-resize;
-  display: flex;
-  justify-content: center;
-  min-height: 0;
-  outline: none;
-  padding: 0;
-  touch-action: none;
-}
-
-.app-splitter::before {
-  background: #d1d5db;
-  border-radius: 999px;
-  content: "";
-  display: block;
-  width: 4px;
-}
-
-.app-splitter:hover::before,
-.app-splitter:focus-visible::before {
-  background: #0891b2;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .app-card,
@@ -108,6 +82,7 @@ body {
 .app-card {
   display: grid;
   gap: 10px;
+  align-content: start;
   padding: 12px;
 }
 
@@ -257,12 +232,16 @@ body {
 
 .command {
   margin-top: 6px;
+  max-height: 78px;
+  overflow: auto;
 }
 
 .printer-list {
   display: grid;
   gap: 8px;
   margin-top: 14px;
+  max-height: 92px;
+  overflow: auto;
 }
 
 .printer-row {
@@ -490,7 +469,7 @@ body {
   align-items: start;
   display: grid;
   gap: 12px;
-  grid-template-columns: 196px minmax(0, 1fr) 292px;
+  grid-template-columns: 220px minmax(0, 1fr) 360px;
   min-height: 680px;
   min-width: 0;
   overflow: visible;
@@ -525,7 +504,7 @@ body {
 
 .template-button-grid {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   grid-template-columns: 1fr 1fr;
 }
 
@@ -534,8 +513,10 @@ body {
 .template-layer-list button {
   background: #f9fafb;
   color: #111827;
-  min-height: 34px;
+  min-height: 32px;
+  overflow: hidden;
   text-align: left;
+  white-space: normal;
 }
 
 .template-button-grid button:hover,
@@ -957,20 +938,61 @@ body {
   border: 1px solid #e5e7eb;
   border-radius: 6px;
   display: grid;
-  gap: 8px;
+  gap: 10px;
   padding: 10px;
 }
 
-.item-column-row {
-  align-items: end;
+.item-column-list {
   display: grid;
   gap: 6px;
-  grid-template-columns: minmax(72px, 0.8fr) minmax(80px, 1fr) 64px minmax(82px, auto);
 }
 
-.item-column-row .compact-checkbox {
-  min-height: 38px;
-  padding-top: 0;
+.item-column-pill {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #dbe1ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 5px;
+}
+
+.item-column-pill.selected {
+  background: #ecfeff;
+  border-color: #0891b2;
+}
+
+.item-column-pill input[type="checkbox"] {
+  height: 16px;
+  margin: 0;
+  width: 16px;
+}
+
+.item-column-select {
+  background: transparent !important;
+  border: 0 !important;
+  color: #111827 !important;
+  display: grid !important;
+  gap: 1px !important;
+  justify-content: stretch !important;
+  min-height: 26px !important;
+  min-width: 0;
+  padding: 0 4px !important;
+  text-align: left;
+}
+
+.item-column-select span,
+.item-column-select small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-column-select small {
+  color: #64748b;
+  font-size: 11px;
 }
 
 .item-column-actions {
@@ -981,8 +1003,27 @@ body {
 .item-column-actions button {
   background: #f9fafb;
   color: #111827;
-  min-height: 38px;
-  padding: 6px 8px;
+  min-height: 28px;
+  min-width: 30px;
+  padding: 3px 6px;
+}
+
+.item-column-detail,
+.item-style-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.item-style-grid {
+  grid-template-columns: 1fr 1fr;
+}
+
+.item-style-grid > div {
+  border: 1px solid #eef1f5;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  padding: 8px;
 }
 
 .style-grid input[type="color"] {
@@ -1029,20 +1070,15 @@ body {
 
 @media (max-width: 1180px) {
   .app-body {
-    grid-template-columns: 1fr;
-    grid-template-rows: 220px minmax(0, 1fr);
-  }
-
-  .app-splitter {
-    display: none;
+    grid-template-rows: minmax(160px, 260px) minmax(0, 1fr);
   }
 
   .app-sidebar {
-    overflow: auto;
+    grid-template-columns: repeat(2, minmax(280px, 1fr));
   }
 
   .template-workspace {
-    grid-template-columns: 176px minmax(0, 1fr) 260px;
+    grid-template-columns: 190px minmax(0, 1fr) 320px;
     min-height: 680px;
   }
 }
@@ -1067,8 +1103,13 @@ body {
   }
 
   .app-body {
-    grid-template-rows: 180px minmax(0, 1fr);
+    grid-template-rows: minmax(180px, 300px) minmax(0, 1fr);
     padding: 8px;
+  }
+
+  .app-sidebar,
+  .item-style-grid {
+    grid-template-columns: 1fr;
   }
 
   .template-workspace,
