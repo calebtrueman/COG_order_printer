@@ -51,6 +51,7 @@ export type DashboardData = {
   rule: DashboardRule;
   jobs: DashboardJob[];
   template: DashboardTemplate;
+  templates: DashboardTemplate[];
   reprintOrders: ReprintOrder[];
 };
 
@@ -250,6 +251,11 @@ export type TemplateDesign = {
 type DashboardTemplate = {
   name: string;
   design: TemplateDesign;
+};
+
+type TemplateStore = {
+  activeName: string;
+  templates: DashboardTemplate[];
 };
 
 type OrderPrinterFulfillmentOrder = {
@@ -969,19 +975,61 @@ export async function ensureAppSettings(shop: string) {
 }
 
 function templateFromRule(rule: { printerExternalId: string | null } | null) {
+  const store = templateStoreFromRule(rule);
+
+  return (
+    store.templates.find((template) => template.name === store.activeName) ||
+    store.templates[0] || {
+      name: "Default packing slip",
+      design: DEFAULT_TEMPLATE_DESIGN,
+    }
+  );
+}
+
+function templateStoreFromRule(
+  rule: { printerExternalId: string | null } | null,
+): TemplateStore {
   const raw = rule?.printerExternalId || "";
 
   if (!raw.startsWith(TEMPLATE_STORAGE_PREFIX)) {
     return {
-      name: "Default packing slip",
-      design: DEFAULT_TEMPLATE_DESIGN,
+      activeName: "Default packing slip",
+      templates: [
+        {
+          name: "Default packing slip",
+          design: DEFAULT_TEMPLATE_DESIGN,
+        },
+      ],
     };
   }
 
   try {
     const parsed = JSON.parse(raw.slice(TEMPLATE_STORAGE_PREFIX.length));
+    const templates =
+      isRecord(parsed) && Array.isArray(parsed.templates)
+        ? parsed.templates
+            .filter(isRecord)
+            .map((template) => ({
+              name: normalizedTemplateName(template.name),
+              design: normalizeTemplateDesign(template.design),
+            }))
+        : [];
 
-    return {
+    if (templates.length) {
+      const activeName =
+        isRecord(parsed) && typeof parsed.activeName === "string"
+          ? normalizedTemplateName(parsed.activeName)
+          : templates[0].name;
+
+      return {
+        activeName: templates.some((template) => template.name === activeName)
+          ? activeName
+          : templates[0].name,
+        templates,
+      };
+    }
+
+    const legacyTemplate = {
       name:
         isRecord(parsed) &&
         typeof parsed.name === "string" &&
@@ -992,18 +1040,42 @@ function templateFromRule(rule: { printerExternalId: string | null } | null) {
         isRecord(parsed) ? parsed.design : DEFAULT_TEMPLATE_DESIGN,
       ),
     };
+
+    return {
+      activeName: legacyTemplate.name,
+      templates: [legacyTemplate],
+    };
   } catch {
     return {
-      name: "Default packing slip",
-      design: DEFAULT_TEMPLATE_DESIGN,
+      activeName: "Default packing slip",
+      templates: [
+        {
+          name: "Default packing slip",
+          design: DEFAULT_TEMPLATE_DESIGN,
+        },
+      ],
     };
   }
 }
 
+function normalizedTemplateName(value: unknown) {
+  const name = String(value || "Default packing slip").trim().slice(0, 120);
+
+  return name || "Default packing slip";
+}
+
+function serializedTemplateStore(store: TemplateStore) {
+  return (
+    TEMPLATE_STORAGE_PREFIX +
+    JSON.stringify({
+      activeName: store.activeName,
+      templates: store.templates,
+    })
+  );
+}
+
 export async function savePrintTemplate(shop: string, formData: FormData) {
-  const name = String(formData.get("templateName") || "Default packing slip")
-    .trim()
-    .slice(0, 120);
+  const name = normalizedTemplateName(formData.get("templateName"));
   const design = parseTemplateDesignJson(formData.get("templateDesign"));
   const rule = await prisma.printerRule.findFirst({
     where: { shop, printerProvider: LOCAL_AGENT_PROVIDER },
@@ -1016,15 +1088,60 @@ export async function savePrintTemplate(shop: string, formData: FormData) {
     );
   }
 
+  const store = templateStoreFromRule(rule);
+  const templates = store.templates.some((template) => template.name === name)
+    ? store.templates.map((template) =>
+        template.name === name ? { name, design } : template,
+      )
+    : [...store.templates, { name, design }];
+
   await prisma.printerRule.update({
     where: { id: rule.id },
     data: {
-      printerExternalId:
-        TEMPLATE_STORAGE_PREFIX +
-        JSON.stringify({
-          name: name || "Default packing slip",
-          design,
-        }),
+      printerExternalId: serializedTemplateStore({
+        activeName: name,
+        templates,
+      }),
+    },
+  });
+}
+
+export async function deletePrintTemplate(shop: string, formData: FormData) {
+  const name = normalizedTemplateName(formData.get("templateName"));
+  const rule = await prisma.printerRule.findFirst({
+    where: { shop, printerProvider: LOCAL_AGENT_PROVIDER },
+    orderBy: [{ enabled: "desc" }, { updatedAt: "desc" }],
+  });
+
+  if (!rule) {
+    throw new Error("Save the fulfillment location and printer first.");
+  }
+
+  const store = templateStoreFromRule(rule);
+
+  if (store.templates.length <= 1) {
+    throw new Error("At least one packing slip template is required.");
+  }
+
+  if (!store.templates.some((template) => template.name === name)) {
+    throw new Error("That template no longer exists.");
+  }
+
+  const templates = store.templates.filter((template) => template.name !== name);
+  const activeName =
+    store.activeName === name
+      ? templates[0].name
+      : templates.some((template) => template.name === store.activeName)
+        ? store.activeName
+        : templates[0].name;
+
+  await prisma.printerRule.update({
+    where: { id: rule.id },
+    data: {
+      printerExternalId: serializedTemplateStore({
+        activeName,
+        templates,
+      }),
     },
   });
 }
@@ -1105,6 +1222,7 @@ export async function loadDashboard(
       printedAt: toIso(job.printedAt),
     })),
     template: templateFromRule(rule),
+    templates: templateStoreFromRule(rule).templates,
     reprintOrders,
   };
 }

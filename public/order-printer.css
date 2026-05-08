@@ -54,7 +54,7 @@ body {
 .app-body {
   display: grid;
   gap: 10px;
-  grid-template-rows: var(--operations-height, 190px) 8px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
   padding: 10px;
@@ -64,36 +64,39 @@ body {
 .app-sidebar {
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1.2fr) minmax(440px, 1.6fr);
+  grid-template-columns: minmax(180px, auto) minmax(0, 1fr);
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
 }
 
-.app-horizontal-splitter {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  cursor: row-resize;
-  display: flex;
-  justify-content: center;
-  outline: none;
-  padding: 0;
-  touch-action: none;
+.operations-tabs {
+  align-content: start;
+  background: #ffffff;
+  border: 1px solid #d9dee8;
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
 }
 
-.app-horizontal-splitter::before {
-  background: #d1d5db;
-  border-radius: 999px;
-  content: "";
-  display: block;
-  height: 4px;
-  width: 84px;
+.operations-tabs button {
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #111827;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 750;
+  min-height: 34px;
+  padding: 7px 10px;
+  text-align: left;
 }
 
-.app-horizontal-splitter:hover::before,
-.app-horizontal-splitter:focus-visible::before {
-  background: #0891b2;
+.operations-tabs button.active {
+  background: #111827;
+  border-color: #111827;
+  color: #ffffff;
 }
 
 .app-card,
@@ -164,6 +167,7 @@ body {
 
 .settings-form select,
 .template-topbar input,
+.template-topbar select,
 .page-settings input,
 .page-settings select,
 .template-toolbar select,
@@ -395,6 +399,7 @@ body {
 }
 
 .template-topbar input,
+.template-topbar select,
 .page-settings input,
 .page-settings select,
 .template-toolbar select,
@@ -1112,11 +1117,11 @@ body {
 
 @media (max-width: 1180px) {
   .app-body {
-    grid-template-rows: var(--operations-height, 210px) 8px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .app-sidebar {
-    grid-template-columns: repeat(2, minmax(280px, 1fr));
+    grid-template-columns: minmax(160px, auto) minmax(0, 1fr);
   }
 
   .template-workspace {
@@ -1145,12 +1150,16 @@ body {
   }
 
   .app-body {
-    grid-template-rows: var(--operations-height, 240px) 8px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     padding: 8px;
   }
 
   .app-sidebar,
   .item-style-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .operations-tabs {
     grid-template-columns: 1fr;
   }
 

@@ -22,6 +22,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import {
   createManualReprintJobForOrder,
+  deletePrintTemplate,
   loadDashboard,
   retryPrintJob,
   rotateAgentToken,
@@ -51,9 +52,7 @@ const MIN_BLOCK_WIDTH = 32;
 const MIN_BLOCK_HEIGHT = 24;
 const MIN_TEMPLATE_ZOOM = 0.35;
 const MAX_TEMPLATE_ZOOM = 1.4;
-const MIN_OPERATIONS_HEIGHT = 112;
-const DEFAULT_OPERATIONS_HEIGHT = 190;
-const MAX_OPERATIONS_HEIGHT = 360;
+type OperationsTab = "rule" | "agent" | "jobs";
 const PAGE_SIZE_OPTIONS = [
   { value: "letter", label: "Letter", width: 816, height: 1056 },
   { value: "a4", label: "A4", width: 794, height: 1123 },
@@ -298,6 +297,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return {
         ok: true,
         message: "Packing slip template saved.",
+      } satisfies ActionData;
+    }
+
+    if (intent === "delete-template") {
+      await deletePrintTemplate(session.shop, formData);
+      return {
+        ok: true,
+        message: "Packing slip template deleted.",
       } satisfies ActionData;
     }
 
@@ -1124,10 +1131,12 @@ function RichTextBox({
 
 function TemplateDesigner({
   template,
+  templates,
   saving,
   canSaveTemplate,
 }: {
   template: { name: string; design: TemplateDesign };
+  templates: { name: string; design: TemplateDesign }[];
   saving: boolean;
   canSaveTemplate: boolean;
 }) {
@@ -1335,6 +1344,22 @@ function TemplateDesigner({
     const nextDesign = copyDesign(template.design);
 
     setName(template.name);
+    setDesign(nextDesign);
+    setEditingTextBlockId(null);
+    setEditingItemsBlockId(null);
+    setSelectedId(nextDesign.blocks[0]?.id || "");
+  }
+
+  function selectTemplate(templateName: string) {
+    const selectedTemplate = templates.find((item) => item.name === templateName);
+
+    if (!selectedTemplate) {
+      return;
+    }
+
+    const nextDesign = copyDesign(selectedTemplate.design);
+
+    setName(selectedTemplate.name);
     setDesign(nextDesign);
     setEditingTextBlockId(null);
     setEditingItemsBlockId(null);
@@ -1803,7 +1828,6 @@ function TemplateDesigner({
 
   return (
     <Form method="post" className="template-editor">
-      <input type="hidden" name="intent" value="save-template" />
       <input
         type="hidden"
         name="templateDesign"
@@ -1812,11 +1836,17 @@ function TemplateDesigner({
       <div className="template-topbar">
         <label>
           <span>Template name</span>
-          <input
+          <select
             name="templateName"
             value={name}
-            onChange={(event) => setName(event.currentTarget.value)}
-          />
+            onChange={(event) => selectTemplate(event.currentTarget.value)}
+          >
+            {templates.map((savedTemplate) => (
+              <option key={savedTemplate.name} value={savedTemplate.name}>
+                {savedTemplate.name}
+              </option>
+            ))}
+          </select>
         </label>
         <div className="template-topbar-actions">
           <span className={dirty ? "template-state dirty" : "template-state"}>
@@ -1831,9 +1861,27 @@ function TemplateDesigner({
           </button>
           <button
             type="submit"
+            name="intent"
+            value="save-template"
             disabled={saving || !canSaveTemplate || !design.blocks.length}
           >
             <span aria-hidden="true">✓</span> Save
+          </button>
+          <button
+            className="danger-button"
+            disabled={saving || templates.length <= 1}
+            name="intent"
+            value="delete-template"
+            onClick={(event) => {
+              if (
+                !window.confirm(`Delete "${name}"? This cannot be undone.`)
+              ) {
+                event.preventDefault();
+              }
+            }}
+            type="submit"
+          >
+            <span aria-hidden="true">×</span> Delete
           </button>
         </div>
       </div>
@@ -2860,9 +2908,8 @@ export default function OrderPrinterDashboard() {
   const defaultPrinterName =
     data.rule?.printerName || data.printers[0]?.name || "";
   const canSave = Boolean(defaultLocationId && defaultPrinterName);
-  const [operationsHeight, setOperationsHeight] = useState(
-    DEFAULT_OPERATIONS_HEIGHT,
-  );
+  const [activeOperationsTab, setActiveOperationsTab] =
+    useState<OperationsTab>("rule");
   const agentConfig = JSON.stringify(
     {
       appUrl: data.appUrl,
@@ -2873,44 +2920,6 @@ export default function OrderPrinterDashboard() {
     null,
     2,
   );
-
-  function startOperationsResize(event: PointerEvent<HTMLButtonElement>) {
-    const splitter = event.currentTarget;
-    const body = splitter.parentElement;
-
-    if (!body) {
-      return;
-    }
-
-    const bodyRect = body.getBoundingClientRect();
-    const maxHeight = Math.min(
-      MAX_OPERATIONS_HEIGHT,
-      Math.max(MIN_OPERATIONS_HEIGHT, bodyRect.height - 360),
-    );
-
-    function resize(moveEvent: globalThis.PointerEvent) {
-      setOperationsHeight(
-        clamp(
-          moveEvent.clientY - bodyRect.top,
-          MIN_OPERATIONS_HEIGHT,
-          maxHeight,
-        ),
-      );
-    }
-
-    function stopResize(upEvent: globalThis.PointerEvent) {
-      splitter.releasePointerCapture(upEvent.pointerId);
-      splitter.removeEventListener("pointermove", resize);
-      splitter.removeEventListener("pointerup", stopResize);
-      splitter.removeEventListener("pointercancel", stopResize);
-    }
-
-    splitter.setPointerCapture(event.pointerId);
-    splitter.addEventListener("pointermove", resize);
-    splitter.addEventListener("pointerup", stopResize);
-    splitter.addEventListener("pointercancel", stopResize);
-    event.preventDefault();
-  }
 
   return (
     <main className="order-printer-app">
@@ -2926,14 +2935,30 @@ export default function OrderPrinterDashboard() {
         ) : null}
       </header>
 
-      <div
-        className="app-body"
-        style={
-          { "--operations-height": `${operationsHeight}px` } as CSSProperties
-        }
-      >
+      <div className="app-body">
         <aside className="app-sidebar">
-          <section className="app-card">
+          <div className="operations-tabs">
+            {(
+              [
+                ["rule", "Automation rule"],
+                ["agent", "Print agent"],
+                ["jobs", "Recent jobs"],
+              ] as const
+            ).map(([tab, label]) => (
+              <button
+                aria-pressed={activeOperationsTab === tab}
+                className={activeOperationsTab === tab ? "active" : ""}
+                key={tab}
+                type="button"
+                onClick={() => setActiveOperationsTab(tab)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {activeOperationsTab === "rule" ? (
+            <section className="app-card">
             <div className="app-card-header">Automation rule</div>
             <Form method="post" className="settings-form">
               <input type="hidden" name="intent" value="save-rule" />
@@ -2977,8 +3002,10 @@ export default function OrderPrinterDashboard() {
               </p>
             ) : null}
           </section>
+          ) : null}
 
-          <section className="app-card">
+          {activeOperationsTab === "agent" ? (
+            <section className="app-card">
             <div className="app-card-header">Print agent</div>
             <div className="agent-grid">
               <div>
@@ -3063,8 +3090,10 @@ export default function OrderPrinterDashboard() {
               ) : null}
             </div>
           </section>
+          ) : null}
 
-          <section className="app-card">
+          {activeOperationsTab === "jobs" ? (
+            <section className="app-card">
             <div className="app-card-header">Recent print jobs</div>
             {data.jobs.length ? (
               <div className="job-table-wrap">
@@ -3128,32 +3157,14 @@ export default function OrderPrinterDashboard() {
               <p className="empty-state">No print jobs have been queued yet.</p>
             )}
           </section>
+          ) : null}
         </aside>
-
-        <button
-          aria-label="Resize operations section"
-          className="app-horizontal-splitter"
-          onKeyDown={(event) => {
-            if (event.key === "ArrowUp") {
-              event.preventDefault();
-              setOperationsHeight((current) =>
-                clamp(current - 24, MIN_OPERATIONS_HEIGHT, MAX_OPERATIONS_HEIGHT),
-              );
-            } else if (event.key === "ArrowDown") {
-              event.preventDefault();
-              setOperationsHeight((current) =>
-                clamp(current + 24, MIN_OPERATIONS_HEIGHT, MAX_OPERATIONS_HEIGHT),
-              );
-            }
-          }}
-          onPointerDown={startOperationsResize}
-          type="button"
-        />
 
         <section className="template-app-panel">
           <TemplateDesigner
             canSaveTemplate={Boolean(data.rule)}
             template={data.template}
+            templates={data.templates}
             saving={saving}
           />
         </section>
