@@ -4425,6 +4425,19 @@ export default function OrderPrinterDashboard() {
                       ))}
                     </select>
                   </label>
+                  <label>
+                    <span>Packing slip template</span>
+                    <select
+                      name="activeTemplateName"
+                      defaultValue={data.template.name}
+                    >
+                      {data.templates.map((template) => (
+                        <option key={template.name} value={template.name}>
+                          {template.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <label className="checkbox-row">
                     <input
                       type="checkbox"

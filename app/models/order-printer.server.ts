@@ -1120,6 +1120,24 @@ function serializedTemplateStore(store: TemplateStore) {
   );
 }
 
+function templateStoreWithActiveTemplate(
+  rule: { printerExternalId: string | null } | null,
+  value: unknown,
+) {
+  const store = templateStoreFromRule(rule);
+  const requestedName = normalizedTemplateName(value);
+  const activeName = store.templates.some(
+    (template) => template.name === requestedName,
+  )
+    ? requestedName
+    : store.activeName;
+
+  return serializedTemplateStore({
+    activeName,
+    templates: store.templates,
+  });
+}
+
 export async function savePrintTemplate(shop: string, formData: FormData) {
   const name = normalizedTemplateName(formData.get("templateName"));
   const design = parseTemplateDesignJson(formData.get("templateDesign"));
@@ -1311,11 +1329,10 @@ export async function savePrinterRule(
     throw new Error("That printer has not been registered by the print agent.");
   }
 
-  const templateStorage = existingRule?.printerExternalId?.startsWith(
-    TEMPLATE_STORAGE_PREFIX,
-  )
-    ? existingRule.printerExternalId
-    : null;
+  const templateStorage = templateStoreWithActiveTemplate(
+    existingRule,
+    formData.get("activeTemplateName"),
+  );
 
   await prisma.$transaction([
     prisma.printerRule.deleteMany({
@@ -1330,6 +1347,7 @@ export async function savePrinterRule(
         locationName: location.name,
         printerName,
         printerProvider: LOCAL_AGENT_PROVIDER,
+        printerExternalId: templateStorage,
         enabled,
       },
       create: {
