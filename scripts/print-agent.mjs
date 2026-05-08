@@ -1,6 +1,14 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { hostname, platform, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -26,6 +34,16 @@ const pollIntervalMs = numberConfig(
   process.env.SHOPIFY_PRINTER_POLL_MS || config.pollIntervalMs,
   5000,
 );
+const keepPrintFiles =
+  booleanConfig(process.env.SHOPIFY_PRINTER_KEEP_FILES) ||
+  booleanConfig(config.keepPrintFiles) ||
+  booleanConfig(config.debug?.keepPrintFiles);
+const debugPrintDir = resolve(
+  stringConfig(process.env.SHOPIFY_PRINTER_DEBUG_DIR) ||
+    stringConfig(config.debugPrintDir) ||
+    stringConfig(config.debug?.printDir) ||
+    join(appDir, "debug-prints"),
+);
 
 let stopped = false;
 
@@ -46,6 +64,18 @@ function stringConfig(value) {
 function numberConfig(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function booleanConfig(value) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
 async function loadConfig() {
@@ -358,6 +388,16 @@ function renderPdf(htmlPath, pdfPath, browserProfileDir) {
   return true;
 }
 
+async function assertFileReady(filePath, description) {
+  const details = await stat(filePath).catch(() => null);
+
+  if (!details?.isFile() || details.size <= 0) {
+    throw new Error(`${description} was not created or is empty: ${filePath}`);
+  }
+
+  return details.size;
+}
+
 function printPdfWindows(pdfPath, printerName) {
   const sumatra = findSumatraPdf();
 
@@ -370,6 +410,199 @@ function printPdfWindows(pdfPath, printerName) {
   run(sumatra, ["-print-to", printerName, "-silent", pdfPath]);
 }
 
+function parseCupsRequestId(output) {
+  const match = output.match(/request id is\s+(\S+)/i);
+  return match?.[1] || "";
+}
+
+function parseCupsJobIds(output) {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim().split(/\s+/)[0])
+    .filter(Boolean);
+}
+
+function cupsJobIds(printerName, mode) {
+  try {
+    return parseCupsJobIds(run("lpstat", ["-W", mode, "-o", printerName]));
+  } catch {
+    return [];
+  }
+}
+
+function cupsKnownJobIds(printerName) {
+  return new Set([
+    ...cupsJobIds(printerName, "not-completed"),
+    ...cupsJobIds(printerName, "completed"),
+  ]);
+}
+
+function cupsJobLine(printerName, requestId, mode) {
+  if (!requestId) {
+    return "";
+  }
+
+  try {
+    return (
+      run("lpstat", ["-W", mode, "-o", printerName])
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find((line) => line.startsWith(`${requestId} `)) || ""
+    );
+  } catch {
+    return "";
+  }
+}
+
+async function submitCupsJob(printablePath, printerName) {
+  const beforeJobIds = cupsKnownJobIds(printerName);
+  const args = [
+    "-d",
+    printerName,
+    "-o",
+    "media=Letter",
+    "-o",
+    "fit-to-page",
+    printablePath,
+  ];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn("lp", args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const finish = async ({ timedOut, code, signal }) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+
+      await sleep(1000);
+
+      const requestId =
+        parseCupsRequestId(stdout) ||
+        [...cupsKnownJobIds(printerName)].find((id) => !beforeJobIds.has(id)) ||
+        "";
+
+      if (requestId) {
+        resolve({
+          requestId,
+          output: stdout.trim(),
+          timedOut,
+        });
+        return;
+      }
+
+      if (!timedOut && code === 0) {
+        resolve({
+          requestId: "",
+          output: stdout.trim() || "CUPS accepted job.",
+          timedOut: false,
+        });
+        return;
+      }
+
+      reject(
+        new Error(
+          [
+            `lp ${args.join(" ")} ${
+              timedOut ? "timed out" : `failed with ${signal || code}`
+            }.`,
+            stderr || stdout,
+          ]
+            .filter(Boolean)
+            .join(" "),
+        ),
+      );
+    };
+
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      void finish({ timedOut: true, code: null, signal: "SIGTERM" });
+    }, 5000);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code, signal) => {
+      void finish({ timedOut: false, code, signal });
+    });
+  });
+}
+
+function cupsPrinterState(printerName) {
+  try {
+    return run("lpstat", ["-p", printerName]).trim();
+  } catch (error) {
+    return error instanceof Error ? error.message : "Unable to read printer.";
+  }
+}
+
+async function printCups(printablePath, printerName) {
+  const submission = await submitCupsJob(printablePath, printerName);
+  const { requestId } = submission;
+
+  const pending = cupsJobLine(printerName, requestId, "not-completed");
+  const completed = cupsJobLine(printerName, requestId, "completed");
+  const printerState = cupsPrinterState(printerName);
+  const prefix =
+    submission.timedOut && requestId
+      ? `lp did not exit promptly; CUPS accepted ${requestId}`
+      : requestId
+        ? `CUPS accepted ${requestId}`
+        : submission.output || "CUPS accepted job";
+
+  if (pending) {
+    return `${prefix}; still queued: ${pending}`;
+  }
+
+  if (completed) {
+    return `${prefix}; completed: ${completed}`;
+  }
+
+  return [prefix, printerState].filter(Boolean).join(". ");
+}
+
+async function preservePrintFiles({ job, htmlPath, pdfPath, renderedPdf }) {
+  if (!keepPrintFiles) {
+    return "";
+  }
+
+  await mkdir(debugPrintDir, { recursive: true });
+  const safeOrderName = job.orderName.replace(/[^a-z0-9._-]+/gi, "_");
+  const prefix = `${new Date().toISOString().replace(/[:.]/g, "-")}-${safeOrderName}-${job.id}`;
+  const savedHtmlPath = join(debugPrintDir, `${prefix}.html`);
+
+  await copyFile(htmlPath, savedHtmlPath);
+
+  if (!renderedPdf) {
+    return ` Saved HTML: ${savedHtmlPath}`;
+  }
+
+  const savedPdfPath = join(debugPrintDir, `${prefix}.pdf`);
+  await copyFile(pdfPath, savedPdfPath);
+
+  return ` Saved files: ${savedHtmlPath} and ${savedPdfPath}`;
+}
+
 async function printJob(job) {
   const dir = await mkdtemp(join(tmpdir(), "cog-order-printer-"));
   const htmlPath = join(dir, `${job.id}.html`);
@@ -378,7 +611,17 @@ async function printJob(job) {
 
   try {
     await writeFile(htmlPath, job.html, "utf8");
+    const htmlSize = await assertFileReady(htmlPath, "Packing slip HTML");
     const renderedPdf = renderPdf(htmlPath, pdfPath, browserProfileDir);
+    const pdfSize = renderedPdf
+      ? await assertFileReady(pdfPath, "Packing slip PDF")
+      : 0;
+    const savedFiles = await preservePrintFiles({
+      job,
+      htmlPath,
+      pdfPath,
+      renderedPdf,
+    });
 
     if (platform() === "win32") {
       if (!renderedPdf) {
@@ -391,18 +634,18 @@ async function printJob(job) {
 
       return {
         printed: true,
-        message: "Printed generated PDF with SumatraPDF.",
+        message: `Printed generated PDF with SumatraPDF (${pdfSize} bytes).${savedFiles}`,
       };
     }
 
     const printablePath = renderedPdf ? pdfPath : htmlPath;
-    run("lp", ["-d", job.printerName, printablePath]);
+    const cupsMessage = await printCups(printablePath, job.printerName);
 
     return {
       printed: true,
       message: renderedPdf
-        ? "Printed generated PDF."
-        : "Printed HTML directly.",
+        ? `Printed generated PDF (${pdfSize} bytes). ${cupsMessage}${savedFiles}`
+        : `Printed HTML directly (${htmlSize} bytes). ${cupsMessage}${savedFiles}`,
     };
   } finally {
     await rm(dir, { recursive: true, force: true });

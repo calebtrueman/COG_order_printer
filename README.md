@@ -86,6 +86,17 @@ When run directly from this repo, the hook expects macOS/Linux CUPS or Windows w
 
 If a browser is not found, the hook falls back to sending the HTML file directly to CUPS.
 
+For print debugging on macOS, keep the generated HTML/PDF files and show the
+CUPS request id in the print-job message:
+
+```shell
+SHOPIFY_PRINTER_KEEP_FILES=1 \
+SHOPIFY_PRINTER_DEBUG_DIR=./debug-prints \
+SHOPIFY_PRINTER_AGENT_URL=https://cog-order-printer.vercel.app \
+SHOPIFY_PRINTER_AGENT_TOKEN=token-from-app-settings \
+npm run agent
+```
+
 ## Production on Vercel
 
 The app is configured for Vercel with React Router SSR and Prisma/Postgres.
