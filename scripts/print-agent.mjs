@@ -34,6 +34,12 @@ const pollIntervalMs = numberConfig(
   process.env.SHOPIFY_PRINTER_POLL_MS || config.pollIntervalMs,
   5000,
 );
+const browserRenderTimeoutMs = numberConfig(
+  process.env.SHOPIFY_PRINTER_BROWSER_TIMEOUT_MS ||
+    config.browserRenderTimeoutMs ||
+    config.debug?.browserRenderTimeoutMs,
+  45000,
+);
 const keepPrintFiles =
   booleanConfig(process.env.SHOPIFY_PRINTER_KEEP_FILES) ||
   booleanConfig(config.keepPrintFiles) ||
@@ -368,31 +374,151 @@ function findSumatraPdf() {
   return null;
 }
 
-function renderPdf(htmlPath, pdfPath, browserProfileDir) {
+async function fileSize(filePath) {
+  const details = await stat(filePath).catch(() => null);
+  return details?.isFile() ? details.size : 0;
+}
+
+async function renderPdf(htmlPath, pdfPath, browserProfileDir) {
   const browser = findBrowser();
 
   if (!browser) {
     return false;
   }
 
-  run(
-    browser,
-    [
-      "--headless=new",
-      "--disable-gpu",
-      "--disable-extensions",
-      "--no-first-run",
-      `--user-data-dir=${browserProfileDir}`,
-      `--print-to-pdf=${pdfPath}`,
-      `file://${htmlPath}`,
-    ],
-    {
-      timeout: 30000,
-      killSignal: "SIGTERM",
-    },
-  );
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      browser,
+      [
+        "--headless=new",
+        "--disable-gpu",
+        "--disable-extensions",
+        "--no-first-run",
+        `--user-data-dir=${browserProfileDir}`,
+        `--print-to-pdf=${pdfPath}`,
+        `file://${htmlPath}`,
+      ],
+      {
+        stdio: ["ignore", "ignore", "pipe"],
+        windowsHide: true,
+      },
+    );
+    let stderr = "";
+    let settled = false;
+    let lastSize = 0;
+    let stableChecks = 0;
 
-  return true;
+    const stopBrowser = () => {
+      if (!child.killed && child.exitCode === null) {
+        child.kill("SIGTERM");
+
+        setTimeout(() => {
+          if (!child.killed && child.exitCode === null) {
+            child.kill("SIGKILL");
+          }
+        }, 2000).unref?.();
+      }
+    };
+
+    const finish = (value) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeout);
+      clearInterval(poll);
+      stopBrowser();
+      resolve(value);
+    };
+
+    const fail = (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeout);
+      clearInterval(poll);
+      stopBrowser();
+      reject(error);
+    };
+
+    const poll = setInterval(async () => {
+      const size = await fileSize(pdfPath);
+
+      if (size <= 0) {
+        return;
+      }
+
+      if (size === lastSize) {
+        stableChecks += 1;
+      } else {
+        lastSize = size;
+        stableChecks = 0;
+      }
+
+      if (stableChecks >= 4) {
+        finish(true);
+      }
+    }, 250);
+
+    const timeout = setTimeout(async () => {
+      if ((await fileSize(pdfPath)) > 0) {
+        finish(true);
+        return;
+      }
+
+      fail(
+        new Error(
+          `${browser} did not create a PDF within ${browserRenderTimeoutMs}ms.${
+            stderr ? ` ${stderr}` : ""
+          }`,
+        ),
+      );
+    }, browserRenderTimeoutMs);
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", fail);
+    child.on("close", async (code, signal) => {
+      if ((await fileSize(pdfPath)) > 0) {
+        finish(true);
+        return;
+      }
+
+      if (code === 0) {
+        finish(false);
+        return;
+      }
+
+      fail(
+        new Error(
+          `${browser} ${
+            signal ? `stopped with ${signal}` : `failed with ${code}`
+          }.${stderr ? ` ${stderr}` : ""}`,
+        ),
+      );
+    });
+  });
+}
+
+async function renderPdfWithFallback(htmlPath, pdfPath, browserProfileDir) {
+  try {
+    return await renderPdf(htmlPath, pdfPath, browserProfileDir);
+  } catch (error) {
+    if ((await fileSize(pdfPath)) > 0) {
+      console.error(
+        `Browser renderer reported an error after creating ${pdfPath}: ${
+          error instanceof Error ? error.message : error
+        }`,
+      );
+      return true;
+    }
+
+    throw error;
+  }
 }
 
 async function assertFileReady(filePath, description) {
@@ -661,7 +787,11 @@ async function printJob(job) {
   try {
     await writeFile(htmlPath, job.html, "utf8");
     const htmlSize = await assertFileReady(htmlPath, "Packing slip HTML");
-    const renderedPdf = renderPdf(htmlPath, pdfPath, browserProfileDir);
+    const renderedPdf = await renderPdfWithFallback(
+      htmlPath,
+      pdfPath,
+      browserProfileDir,
+    );
     const pdfSize = renderedPdf
       ? await assertFileReady(pdfPath, "Packing slip PDF")
       : 0;
