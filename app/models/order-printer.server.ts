@@ -139,6 +139,9 @@ type FulfillmentOrderLineItem = {
 type FulfillmentOrderNode = {
   id: string;
   status: string;
+  deliveryMethod: {
+    methodType: string | null;
+  } | null;
   assignedLocation: {
     name: string | null;
     location: { id: string; name: string } | null;
@@ -344,7 +347,7 @@ type AgentPrinterInput = {
 
 const LOCAL_AGENT_PROVIDER = "local-agent";
 const DEFAULT_VENDOR_FILTER = ["EG4 Electronics"];
-const PICKUP_SHIP_TO_TEXT = "Pickup in store at Canadian Off Grid";
+const PICKUP_SHIP_TO_TEXT = "Pickup at Canadian Off Grid";
 const RESTOCK_DOCUMENT_DEFAULT_HTML =
   "<h2>COG restock list</h2><p>Scan low-inventory product QR codes from packing slips to add items here.</p>";
 const RESTOCK_SCAN_TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000;
@@ -726,6 +729,9 @@ const ORDER_QUERY = `#graphql
         nodes {
           id
           status
+          deliveryMethod {
+            methodType
+          }
           assignedLocation {
             name
             location {
@@ -797,6 +803,9 @@ const ORDER_LIST_QUERY = `#graphql
           nodes {
             id
             status
+            deliveryMethod {
+              methodType
+            }
             assignedLocation {
               name
               location {
@@ -2121,13 +2130,23 @@ function shippingMethod(order: OrderPrinterOrder) {
   return line?.title || "";
 }
 
-function isPickupOrder(order: Pick<OrderPrinterOrder, "shippingAddress" | "shippingLines">) {
+function isPickupOrder(
+  order: Pick<
+    OrderPrinterOrder,
+    "fulfillmentOrders" | "shippingAddress" | "shippingLines"
+  >,
+) {
+  const deliveryMethodTypes = order.fulfillmentOrders.nodes.map(
+    (fulfillmentOrder) =>
+      String(fulfillmentOrder.deliveryMethod?.methodType || "").toUpperCase(),
+  );
   const method = order.shippingLines.nodes
     .map((shippingLine) => shippingLine.title || shippingLine.code || "")
     .join(" ")
     .toLowerCase();
 
   return (
+    deliveryMethodTypes.includes("PICK_UP") ||
     method.includes("pickup") ||
     method.includes("pick up") ||
     (!order.shippingAddress && method.includes("local"))
