@@ -5,6 +5,25 @@ import {
 } from "../models/order-printer.server";
 import { authenticate } from "../shopify.server";
 
+function adminExtensionCorsHeaders(request: Request) {
+  const origin = request.headers.get("Origin");
+  const headers = new Headers({
+    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Max-Age": "86400",
+    Vary: "Origin",
+  });
+
+  headers.set(
+    "Access-Control-Allow-Origin",
+    origin?.endsWith(".myshopify.com") || origin === "https://admin.shopify.com"
+      ? origin
+      : "*",
+  );
+
+  return headers;
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, cors, session } = await authenticate.admin(request);
   const url = new URL(request.url);
@@ -43,6 +62,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: adminExtensionCorsHeaders(request),
+    });
+  }
+
   const { cors } = await authenticate.admin(request);
 
   return cors(
