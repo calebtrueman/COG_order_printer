@@ -1,0 +1,11 @@
+api_version = "2026-07"
+uid = "b6263f45-7f47-1ebe-075c-2aba18df9dfefdc60a90"
+
+[[extensions]]
+name = "Print COG Packing Slip"
+handle = "cog-packing-slip-print"
+type = "ui_extension"
+
+[[extensions.targeting]]
+module = "./src/PrintActionExtension.jsx"
+target = "admin.order-details.print-action.render"

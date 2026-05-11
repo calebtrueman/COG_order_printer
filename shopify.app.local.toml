@@ -8,7 +8,7 @@ embedded = true
 name = "COG Order Printer"
 
 [access_scopes]
-scopes = "read_orders,read_locations,read_merchant_managed_fulfillment_orders"
+scopes = "read_orders,read_locations,read_merchant_managed_fulfillment_orders,read_products"
 
 [webhooks]
 api_version = "2026-07"

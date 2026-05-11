@@ -114,6 +114,14 @@ model PrintEvent {
   @@index([jobId])
 }
 
+model RestockDocument {
+  id          String   @id @default(cuid())
+  shop        String   @unique
+  contentHtml String   @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
 enum PrintJobStatus {
   QUEUED
   PRINTING

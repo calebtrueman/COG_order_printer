@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { PrintJobStatus, Prisma } from "@prisma/client";
+import QRCode from "qrcode";
 import prisma from "../db.server";
 
 type AdminGraphqlClient = {
@@ -53,6 +54,7 @@ export type DashboardData = {
   template: DashboardTemplate;
   templates: DashboardTemplate[];
   reprintOrders: ReprintOrder[];
+  restockDocumentHtml: string;
 };
 
 type Address = {
@@ -90,6 +92,12 @@ type PackingSlipLine = {
   quantity: number;
   imageUrl: string | null;
   imageAlt: string | null;
+  productId: string | null;
+  variantId: string | null;
+  vendor: string | null;
+  productType: string | null;
+  onHand: number | null;
+  qrSvgDataUri: string | null;
 };
 
 type FulfillmentOrderLineItem = {
@@ -102,6 +110,25 @@ type FulfillmentOrderLineItem = {
     variantTitle: string | null;
     quantity: number | null;
     image: ImageValue;
+    product: {
+      id: string;
+      title: string | null;
+      handle: string | null;
+      vendor: string | null;
+      productType: string | null;
+    } | null;
+    variant: {
+      id: string;
+      sku: string | null;
+      inventoryItem: {
+        inventoryLevel: {
+          quantities: {
+            name: string;
+            quantity: number;
+          }[];
+        } | null;
+      } | null;
+    } | null;
   } | null;
 };
 
@@ -143,6 +170,25 @@ type OrderPrinterOrder = {
       variantTitle: string | null;
       quantity: number | null;
       image: ImageValue;
+      product: {
+        id: string;
+        title: string | null;
+        handle: string | null;
+        vendor: string | null;
+        productType: string | null;
+      } | null;
+      variant: {
+        id: string;
+        sku: string | null;
+        inventoryItem: {
+          inventoryLevel: {
+            quantities: {
+              name: string;
+              quantity: number;
+            }[];
+          } | null;
+        } | null;
+      } | null;
     }[];
   };
   fulfillmentOrders: {
@@ -185,7 +231,9 @@ export type ItemColumnKey =
   | "image"
   | "title"
   | "variant"
-  | "sku";
+  | "sku"
+  | "onHand"
+  | "qr";
 
 export type ItemColumn = {
   key: ItemColumnKey;
@@ -291,6 +339,13 @@ type AgentPrinterInput = {
 };
 
 const LOCAL_AGENT_PROVIDER = "local-agent";
+const REQUIRED_FULFILLMENT_LOCATION_NAME = "Canadian Off Grid";
+const REQUIRED_VENDOR = "EG4 Electronics";
+const REQUIRED_PRODUCT_TYPE = "EG4";
+const RESTOCK_DOCUMENT_DEFAULT_HTML =
+  "<h2>COG restock list</h2><p>Scan low-inventory product QR codes from packing slips to add items here.</p>";
+const RESTOCK_SCAN_TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const PRINT_PREVIEW_TOKEN_TTL_MS = 15 * 60 * 1000;
 const TEMPLATE_PAGE: TemplatePage = {
   size: "letter",
   width: 816,
@@ -404,6 +459,32 @@ const DEFAULT_ITEM_COLUMNS: NormalizedItemColumn[] = [
     valueFontSize: 10,
     valueFontWeight: "400",
     valueColor: "#6b7280",
+  },
+  {
+    key: "onHand",
+    label: "On hand",
+    enabled: false,
+    width: 72,
+    align: "right",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 11,
+    valueFontWeight: "700",
+    valueColor: "#111827",
+  },
+  {
+    key: "qr",
+    label: "QR",
+    enabled: false,
+    width: 72,
+    align: "center",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 10,
+    valueFontWeight: "400",
+    valueColor: "#111827",
   },
 ];
 
@@ -546,7 +627,7 @@ const LOCATIONS_QUERY = `#graphql
 `;
 
 const ORDER_QUERY = `#graphql
-  query OrderPrinterOrder($id: ID!) {
+  query OrderPrinterOrder($id: ID!, $locationId: ID!) {
     order(id: $id) {
       id
       name
@@ -603,6 +684,25 @@ const ORDER_QUERY = `#graphql
             url
             altText
           }
+          product {
+            id
+            title
+            handle
+            vendor
+            productType
+          }
+          variant {
+            id
+            sku
+            inventoryItem {
+              inventoryLevel(locationId: $locationId) {
+                quantities(names: ["on_hand"]) {
+                  name
+                  quantity
+                }
+              }
+            }
+          }
         }
       }
       fulfillmentOrders(first: 25) {
@@ -629,6 +729,25 @@ const ORDER_QUERY = `#graphql
                 image {
                   url
                   altText
+                }
+                product {
+                  id
+                  title
+                  handle
+                  vendor
+                  productType
+                }
+                variant {
+                  id
+                  sku
+                  inventoryItem {
+                    inventoryLevel(locationId: $locationId) {
+                      quantities(names: ["on_hand"]) {
+                        name
+                        quantity
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -672,6 +791,12 @@ const ORDER_LIST_QUERY = `#graphql
               nodes {
                 totalQuantity
                 remainingQuantity
+                lineItem {
+                  product {
+                    vendor
+                    productType
+                  }
+                }
               }
             }
           }
@@ -726,6 +851,111 @@ function decodeHtmlText(value: string) {
     .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'");
+}
+
+type SignedTokenPayload = {
+  kind: "print-preview" | "restock-scan";
+  shop: string;
+  orderId?: string;
+  productId?: string | null;
+  variantId?: string | null;
+  title?: string;
+  variantTitle?: string | null;
+  sku?: string | null;
+  vendor?: string | null;
+  productType?: string | null;
+  onHand?: number | null;
+  orderName?: string | null;
+  exp: number;
+};
+
+function signingSecret() {
+  return (
+    process.env.RESTOCK_TOKEN_SECRET ||
+    process.env.SHOPIFY_API_SECRET ||
+    "development-only-cog-order-printer"
+  );
+}
+
+function signPayload(payload: SignedTokenPayload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", signingSecret())
+    .update(body)
+    .digest("base64url");
+
+  return `${body}.${signature}`;
+}
+
+function verifySignedPayload(token: string) {
+  const [body, signature] = String(token || "").split(".");
+
+  if (!body || !signature) {
+    return null;
+  }
+
+  const expected = crypto
+    .createHmac("sha256", signingSecret())
+    .update(body)
+    .digest("base64url");
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(signature);
+
+  if (
+    expectedBuffer.length !== actualBuffer.length ||
+    !crypto.timingSafeEqual(expectedBuffer, actualBuffer)
+  ) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(
+      Buffer.from(body, "base64url").toString("utf8"),
+    ) as SignedTokenPayload;
+
+    if (!payload.shop || payload.exp < Date.now()) {
+      return null;
+    }
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function appBaseUrl(fallback?: string) {
+  const configured = process.env.SHOPIFY_APP_URL?.trim();
+
+  return (configured || fallback || "").replace(/\/+$/, "");
+}
+
+export function createSignedPrintPreviewUrl({
+  shop,
+  orderId,
+  baseUrl,
+}: {
+  shop: string;
+  orderId: string;
+  baseUrl: string;
+}) {
+  const token = signPayload({
+    kind: "print-preview",
+    shop,
+    orderId,
+    exp: Date.now() + PRINT_PREVIEW_TOKEN_TTL_MS,
+  });
+
+  return `${appBaseUrl(baseUrl)}/print-preview/${encodeURIComponent(token)}`;
+}
+
+export function verifySignedPrintPreviewToken(token: string) {
+  const payload = verifySignedPayload(token);
+
+  if (payload?.kind !== "print-preview" || !payload.orderId) {
+    return null;
+  }
+
+  return payload;
 }
 
 function normalizePrinterName(value: unknown) {
@@ -846,8 +1076,8 @@ function normalizedItemColumns(value: unknown): NormalizedItemColumn[] {
       return {
         key: key as ItemColumnKey,
         label:
-          typeof column.label === "string" && column.label.trim()
-            ? column.label.trim().slice(0, 40)
+          typeof column.label === "string"
+            ? column.label.slice(0, 40)
             : fallback?.label || key,
         enabled: column.enabled !== false,
         width: boundedNumber(column.width, fallback?.width || 120, 32, 420),
@@ -1235,25 +1465,33 @@ export async function loadDashboard(
   shop: string,
   options: { includeReprintOrders?: boolean } = {},
 ): Promise<DashboardData> {
-  const [settings, locations, rule, printers, jobs, reprintOrders] =
-    await Promise.all([
-      ensureAppSettings(shop),
-      fetchLocations(admin),
-      prisma.printerRule.findFirst({
-        where: { shop, printerProvider: LOCAL_AGENT_PROVIDER },
-        orderBy: [{ enabled: "desc" }, { updatedAt: "desc" }],
-      }),
-      prisma.registeredPrinter.findMany({
-        where: { shop, active: true },
-        orderBy: [{ isDefault: "desc" }, { name: "asc" }],
-      }),
-      prisma.printJob.findMany({
-        where: { shop },
-        orderBy: { createdAt: "desc" },
-        take: 20,
-      }),
-      loadReprintOrdersForDashboard(admin, shop, options.includeReprintOrders),
-    ]);
+  const [
+    settings,
+    locations,
+    rule,
+    printers,
+    jobs,
+    reprintOrders,
+    restockDocumentHtml,
+  ] = await Promise.all([
+    ensureAppSettings(shop),
+    fetchLocations(admin),
+    prisma.printerRule.findFirst({
+      where: { shop, printerProvider: LOCAL_AGENT_PROVIDER },
+      orderBy: [{ enabled: "desc" }, { updatedAt: "desc" }],
+    }),
+    prisma.registeredPrinter.findMany({
+      where: { shop, active: true },
+      orderBy: [{ isDefault: "desc" }, { name: "asc" }],
+    }),
+    prisma.printJob.findMany({
+      where: { shop },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    }),
+    loadReprintOrdersForDashboard(admin, shop, options.includeReprintOrders),
+    loadRestockDocument(shop),
+  ]);
 
   return {
     shop,
@@ -1288,6 +1526,7 @@ export async function loadDashboard(
     template: templateFromRule(rule),
     templates: templateStoreFromRule(rule).templates,
     reprintOrders,
+    restockDocumentHtml,
   };
 }
 
@@ -1323,6 +1562,12 @@ export async function savePrinterRule(
 
   if (!location) {
     throw new Error("That fulfillment location is not available.");
+  }
+
+  if (!isRequiredFulfillmentLocation(location.name)) {
+    throw new Error(
+      `COG Order Printer is restricted to the ${REQUIRED_FULFILLMENT_LOCATION_NAME} fulfillment location.`,
+    );
   }
 
   if (!printer || !printer.active) {
@@ -1369,18 +1614,60 @@ function isOpenFulfillmentOrder(fulfillmentOrder: FulfillmentOrderNode) {
   return status !== "CLOSED" && status !== "CANCELLED";
 }
 
+function normalizedMatchText(value: string | null | undefined) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function isRequiredFulfillmentLocation(name: string | null | undefined) {
+  const normalizedName = normalizedMatchText(name);
+  const requiredName = normalizedMatchText(REQUIRED_FULFILLMENT_LOCATION_NAME);
+
+  return (
+    normalizedName === requiredName ||
+    normalizedName.startsWith(`${requiredName} `) ||
+    normalizedName.startsWith(`${requiredName} -`)
+  );
+}
+
+function fulfillmentOrderIsRequiredLocation(
+  fulfillmentOrder: FulfillmentOrderNode,
+  locationId: string,
+) {
+  return (
+    fulfillmentOrder.assignedLocation?.location?.id === locationId &&
+    isRequiredFulfillmentLocation(
+      fulfillmentOrder.assignedLocation?.name ||
+        fulfillmentOrder.assignedLocation?.location?.name,
+    )
+  );
+}
+
+function lineRemainingQuantity(line: FulfillmentOrderLineItem) {
+  return (
+    line.remainingQuantity ?? line.totalQuantity ?? line.lineItem?.quantity ?? 0
+  );
+}
+
+function lineMatchesProductRule(line: FulfillmentOrderLineItem) {
+  const product = line.lineItem?.product;
+
+  return (
+    normalizedMatchText(product?.vendor) ===
+      normalizedMatchText(REQUIRED_VENDOR) ||
+    normalizedMatchText(product?.productType) ===
+      normalizedMatchText(REQUIRED_PRODUCT_TYPE)
+  );
+}
+
 function fulfillmentOrderHasRemainingItems(
   fulfillmentOrder: FulfillmentOrderNode,
 ) {
-  return fulfillmentOrder.lineItems.nodes.some((line) => {
-    const quantity =
-      line.remainingQuantity ??
-      line.totalQuantity ??
-      line.lineItem?.quantity ??
-      0;
-
-    return quantity > 0;
-  });
+  return fulfillmentOrder.lineItems.nodes.some(
+    (line) => lineRemainingQuantity(line) > 0 && lineMatchesProductRule(line),
+  );
 }
 
 function matchingOpenFulfillmentOrders(
@@ -1389,7 +1676,7 @@ function matchingOpenFulfillmentOrders(
 ) {
   return order.fulfillmentOrders.nodes.filter(
     (fulfillmentOrder) =>
-      fulfillmentOrder.assignedLocation?.location?.id === locationId &&
+      fulfillmentOrderIsRequiredLocation(fulfillmentOrder, locationId) &&
       isOpenFulfillmentOrder(fulfillmentOrder) &&
       fulfillmentOrderHasRemainingItems(fulfillmentOrder),
   );
@@ -2047,6 +2334,18 @@ function renderItemCell(column: ItemColumn, line: PackingSlipLine) {
     }</td>`;
   }
 
+  if (column.key === "onHand") {
+    return `<td class="on-hand-cell" style="${itemColumnValueStyle(column)}">${line.onHand ?? ""}</td>`;
+  }
+
+  if (column.key === "qr") {
+    return `<td class="qr-cell" style="${itemColumnValueStyle(column)}">${
+      line.qrSvgDataUri
+        ? `<img class="restock-qr" src="${escapeHtml(line.qrSvgDataUri)}" alt="${escapeHtml(`Restock QR for ${lineTitle(line)}`)}">`
+        : ""
+    }</td>`;
+  }
+
   if (column.key === "title") {
     return `<td style="${itemColumnValueStyle(column)}">${escapeHtml(line.title)}</td>`;
   }
@@ -2199,6 +2498,14 @@ function renderPackingSlipHtml({
         object-fit: contain;
         width: 54px;
       }
+      .qr-cell {
+        text-align: center;
+      }
+      .restock-qr {
+        display: inline-block;
+        height: 58px;
+        width: 58px;
+      }
       .checkbox-cell {
         text-align: center;
       }
@@ -2224,17 +2531,94 @@ function renderPackingSlipHtml({
 
 function fulfillmentLineToPackingLine(line: FulfillmentOrderLineItem) {
   const orderLine = line.lineItem;
-  const quantity =
-    line.remainingQuantity ?? line.totalQuantity ?? orderLine?.quantity ?? 0;
+  const quantity = lineRemainingQuantity(line);
+  const inventoryQuantities =
+    orderLine?.variant?.inventoryItem?.inventoryLevel?.quantities || [];
+  const onHand =
+    inventoryQuantities.find(
+      (quantityValue) => quantityValue.name === "on_hand",
+    )?.quantity ?? null;
 
   return {
     title: orderLine?.title || orderLine?.name || "Untitled item",
     variantTitle: orderLine?.variantTitle ?? null,
-    sku: orderLine?.sku || null,
+    sku: orderLine?.variant?.sku || orderLine?.sku || null,
     quantity,
     imageUrl: orderLine?.image?.url || null,
     imageAlt: orderLine?.image?.altText || null,
+    productId: orderLine?.product?.id || null,
+    variantId: orderLine?.variant?.id || null,
+    vendor: orderLine?.product?.vendor || null,
+    productType: orderLine?.product?.productType || null,
+    onHand,
+    qrSvgDataUri: null,
   };
+}
+
+function createRestockScanUrl({
+  shop,
+  orderName,
+  line,
+}: {
+  shop: string;
+  orderName: string;
+  line: PackingSlipLine;
+}) {
+  const token = signPayload({
+    kind: "restock-scan",
+    shop,
+    productId: line.productId,
+    variantId: line.variantId,
+    title: lineTitle(line),
+    variantTitle: line.variantTitle,
+    sku: line.sku,
+    vendor: line.vendor,
+    productType: line.productType,
+    onHand: line.onHand,
+    orderName,
+    exp: Date.now() + RESTOCK_SCAN_TOKEN_TTL_MS,
+  });
+  const baseUrl = appBaseUrl();
+
+  if (!baseUrl) {
+    return "";
+  }
+
+  return `${baseUrl}/restock/scan?token=${encodeURIComponent(token)}`;
+}
+
+async function qrDataUri(value: string) {
+  if (!value) {
+    return null;
+  }
+
+  const svg = await QRCode.toString(value, {
+    type: "svg",
+    margin: 1,
+    width: 96,
+    errorCorrectionLevel: "M",
+  });
+
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+}
+
+async function linesWithRestockQrCodes({
+  shop,
+  order,
+  lines,
+}: {
+  shop: string;
+  order: OrderPrinterOrder;
+  lines: PackingSlipLine[];
+}) {
+  return Promise.all(
+    lines.map(async (line) => ({
+      ...line,
+      qrSvgDataUri: await qrDataUri(
+        createRestockScanUrl({ shop, orderName: order.name, line }),
+      ),
+    })),
+  );
 }
 
 async function buildPackingSlipJob({
@@ -2262,10 +2646,17 @@ async function buildPackingSlipJob({
     };
   }
 
+  if (!isRequiredFulfillmentLocation(rule.locationName)) {
+    return {
+      ok: false as const,
+      reason: `Automatic printing is restricted to ${REQUIRED_FULFILLMENT_LOCATION_NAME}.`,
+    };
+  }
+
   const data = await graphqlJson<{ order: OrderPrinterOrder | null }>(
     admin,
     ORDER_QUERY,
-    { id: orderId },
+    { id: orderId, locationId: rule.locationId },
   );
 
   if (!data.order) {
@@ -2288,19 +2679,32 @@ async function buildPackingSlipJob({
     .flatMap((fulfillmentOrder) =>
       fulfillmentOrder.lineItems.nodes.map(fulfillmentLineToPackingLine),
     )
-    .filter((line) => line.quantity > 0);
+    .filter(
+      (line) =>
+        line.quantity > 0 &&
+        (normalizedMatchText(line.vendor) ===
+          normalizedMatchText(REQUIRED_VENDOR) ||
+          normalizedMatchText(line.productType) ===
+            normalizedMatchText(REQUIRED_PRODUCT_TYPE)),
+    );
 
   if (!printableLines.length) {
     return {
       ok: false as const,
-      reason: `Order ${data.order.name} has no unfulfilled items for ${rule.locationName}.`,
+      reason: `Order ${data.order.name} has no unfulfilled ${REQUIRED_VENDOR}/${REQUIRED_PRODUCT_TYPE} items for ${rule.locationName}.`,
     };
   }
+
+  const lines = await linesWithRestockQrCodes({
+    shop,
+    order: data.order,
+    lines: printableLines,
+  });
 
   const html = renderPackingSlipHtml({
     order: data.order,
     locationName: rule.locationName,
-    lines: printableLines,
+    lines,
     template: templateFromRule(rule).design,
   });
 
@@ -2359,6 +2763,27 @@ export async function createPrintJobForOrder(
 
     throw error;
   }
+}
+
+export async function buildPackingSlipPreviewHtml(
+  admin: AdminGraphqlClient,
+  shop: string,
+  orderId: string,
+) {
+  const payload = await buildPackingSlipJob({ admin, shop, orderId });
+
+  if (!payload.ok) {
+    return {
+      ok: false as const,
+      reason: payload.reason,
+    };
+  }
+
+  return {
+    ok: true as const,
+    orderName: payload.order.name,
+    html: payload.html,
+  };
 }
 
 export async function createManualReprintJobForOrder(
@@ -2425,6 +2850,181 @@ export async function createManualReprintJobForOrder(
 
     return { created: true, jobId: job.id, reason: "Queued." };
   }
+}
+
+function sanitizeRestockDocumentHtml(html: string) {
+  const allowedTags = new Set([
+    "b",
+    "strong",
+    "i",
+    "em",
+    "u",
+    "span",
+    "br",
+    "div",
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "ul",
+    "ol",
+    "li",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "th",
+    "td",
+    "section",
+  ]);
+
+  return String(html || RESTOCK_DOCUMENT_DEFAULT_HTML)
+    .slice(0, 200000)
+    .replace(/<[^>]*>|[^<]+/g, (chunk) => {
+      if (!chunk.startsWith("<")) {
+        return escapeHtml(decodeHtmlText(chunk));
+      }
+
+      const closing = chunk.match(/^<\/\s*([a-z0-9]+)\s*>$/i);
+
+      if (closing) {
+        const tag = closing[1].toLowerCase();
+
+        return allowedTags.has(tag) && tag !== "br" ? `</${tag}>` : "";
+      }
+
+      const opening = chunk.match(/^<\s*([a-z0-9]+)([^>]*)\/?\s*>$/i);
+
+      if (!opening) {
+        return "";
+      }
+
+      const tag = opening[1].toLowerCase();
+      const attrs = opening[2] || "";
+
+      if (!allowedTags.has(tag)) {
+        return "";
+      }
+
+      if (tag === "br") {
+        return "<br>";
+      }
+
+      const style = sanitizedInlineStyle(attributeValue(attrs, "style"));
+      const dataSku = attributeValue(attrs, "data-sku")
+        .replace(/[^\w./:-]+/g, " ")
+        .trim()
+        .slice(0, 120);
+      const attributes = [
+        style ? `style="${escapeHtml(style)}"` : "",
+        dataSku ? `data-sku="${escapeHtml(dataSku)}"` : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      return attributes ? `<${tag} ${attributes}>` : `<${tag}>`;
+    });
+}
+
+export async function loadRestockDocument(shop: string) {
+  const document = await prisma.restockDocument.upsert({
+    where: { shop },
+    update: {},
+    create: {
+      shop,
+      contentHtml: RESTOCK_DOCUMENT_DEFAULT_HTML,
+    },
+  });
+
+  return document.contentHtml;
+}
+
+export async function saveRestockDocument(shop: string, formData: FormData) {
+  const contentHtml = sanitizeRestockDocumentHtml(
+    String(formData.get("restockDocumentHtml") || ""),
+  );
+
+  await prisma.restockDocument.upsert({
+    where: { shop },
+    update: { contentHtml },
+    create: { shop, contentHtml },
+  });
+}
+
+export async function clearRestockDocument(shop: string) {
+  await prisma.restockDocument.upsert({
+    where: { shop },
+    update: { contentHtml: RESTOCK_DOCUMENT_DEFAULT_HTML },
+    create: { shop, contentHtml: RESTOCK_DOCUMENT_DEFAULT_HTML },
+  });
+}
+
+function restockScanEntryHtml(payload: SignedTokenPayload) {
+  const title = payload.title || "Untitled product";
+  const details = [
+    payload.sku ? `SKU: ${payload.sku}` : "",
+    Number.isFinite(payload.onHand) ? `On hand: ${payload.onHand}` : "",
+    payload.vendor ? `Vendor: ${payload.vendor}` : "",
+    payload.productType ? `Type: ${payload.productType}` : "",
+    payload.orderName ? `Order: ${payload.orderName}` : "",
+  ].filter(Boolean);
+
+  return `
+    <section class="restock-line" data-sku="${escapeHtml(payload.sku || "")}">
+      <h3>${escapeHtml(title)}</h3>
+      ${details.length ? `<p>${details.map(escapeHtml).join(" | ")}</p>` : ""}
+      <p>Needed: <strong>____</strong></p>
+    </section>
+  `;
+}
+
+export async function appendRestockScanToken(token: string) {
+  const payload = verifySignedPayload(token);
+
+  if (payload?.kind !== "restock-scan" || !payload.title) {
+    return {
+      ok: false as const,
+      reason: "This restock QR code is invalid or expired.",
+    };
+  }
+
+  const current = await loadRestockDocument(payload.shop);
+  const contentHtml = sanitizeRestockDocumentHtml(
+    `${current}\n${restockScanEntryHtml(payload)}`,
+  );
+
+  await prisma.restockDocument.upsert({
+    where: { shop: payload.shop },
+    update: { contentHtml },
+    create: { shop: payload.shop, contentHtml },
+  });
+
+  return {
+    ok: true as const,
+    shop: payload.shop,
+    title: payload.title,
+    sku: payload.sku || "",
+  };
+}
+
+export async function restockDocumentDownloadHtml(shop: string) {
+  const contentHtml = await loadRestockDocument(shop);
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>COG restock list</title>
+    <style>
+      body { color: #111827; font-family: Arial, sans-serif; margin: 32px; }
+      h1, h2, h3 { margin-bottom: 0.35rem; }
+      .restock-line { border-bottom: 1px solid #d1d5db; padding: 12px 0; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; }
+    </style>
+  </head>
+  <body>${contentHtml}</body>
+</html>`;
 }
 
 export async function authenticateAgentToken(request: Request) {

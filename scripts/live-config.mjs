@@ -6,6 +6,7 @@ const LIVE_SCOPES = [
   "read_orders",
   "read_locations",
   "read_merchant_managed_fulfillment_orders",
+  "read_products",
 ];
 
 function requiredEnv(name) {

@@ -22,11 +22,13 @@ import type {
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import {
+  clearRestockDocument,
   createManualReprintJobForOrder,
   deletePrintTemplate,
   loadDashboard,
   retryPrintJob,
   rotateAgentToken,
+  saveRestockDocument,
   savePrintTemplate,
   savePrinterRule,
 } from "../models/order-printer.server";
@@ -54,7 +56,7 @@ const MIN_BLOCK_HEIGHT = 24;
 const MIN_TEMPLATE_ZOOM = 0.35;
 const MAX_TEMPLATE_ZOOM = 1.4;
 type AppTab = "template" | "operations";
-type OperationsTab = "rule" | "agent" | "jobs";
+type OperationsTab = "rule" | "agent" | "jobs" | "restock";
 const PAGE_SIZE_OPTIONS = [
   { value: "letter", label: "Letter", width: 816, height: 1056 },
   { value: "a4", label: "A4", width: 794, height: 1123 },
@@ -163,6 +165,32 @@ const DEFAULT_ITEM_COLUMNS = [
     valueFontWeight: "400",
     valueColor: "#6b7280",
   },
+  {
+    key: "onHand",
+    label: "On hand",
+    enabled: false,
+    width: 72,
+    align: "right",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 11,
+    valueFontWeight: "700",
+    valueColor: "#111827",
+  },
+  {
+    key: "qr",
+    label: "QR",
+    enabled: false,
+    width: 72,
+    align: "center",
+    labelFontSize: 10,
+    labelFontWeight: "700",
+    labelColor: "#374151",
+    valueFontSize: 10,
+    valueFontWeight: "400",
+    valueColor: "#111827",
+  },
 ] as const;
 type ItemColumnKey = (typeof DEFAULT_ITEM_COLUMNS)[number]["key"];
 type EditorItemColumn = {
@@ -270,8 +298,18 @@ const TEMPLATE_FIELD_GROUPS: { label: string; fields: TemplateField[] }[] = [
 ];
 const TEMPLATE_FIELDS = TEMPLATE_FIELD_GROUPS.flatMap((group) => group.fields);
 const SAMPLE_LINES = [
-  { quantity: 1, title: "EG4 6000XP inverter", sku: "EG4-6000XP" },
-  { quantity: 2, title: "Server rack battery cable set", sku: "CAB-RACK-2/0" },
+  {
+    quantity: 1,
+    title: "EG4 6000XP inverter",
+    sku: "EG4-6000XP",
+    onHand: 3,
+  },
+  {
+    quantity: 2,
+    title: "Server rack battery cable set",
+    sku: "CAB-RACK-2/0",
+    onHand: 18,
+  },
 ];
 
 export const links = () => [{ rel: "stylesheet", href: "/order-printer.css" }];
@@ -346,6 +384,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return {
         ok: true,
         message: "Packing slip template deleted.",
+      } satisfies ActionData;
+    }
+
+    if (intent === "save-restock-document") {
+      await saveRestockDocument(session.shop, formData);
+      return {
+        ok: true,
+        message: "Restock document saved.",
+      } satisfies ActionData;
+    }
+
+    if (intent === "clear-restock-document") {
+      await clearRestockDocument(session.shop);
+      return {
+        ok: true,
+        message: "Restock document cleared.",
       } satisfies ActionData;
     }
 
@@ -1004,7 +1058,10 @@ function normalizeItemColumns(
 
       return {
         key: fallback.key,
-        label: column.label || fallback.label,
+        label:
+          typeof column.label === "string"
+            ? column.label.slice(0, 40)
+            : fallback.label,
         enabled: column.enabled !== false,
         width: clamp(Number(column.width || fallback.width), 32, 420),
         align:
@@ -1260,6 +1317,14 @@ function renderSampleItemCell(
 
   if (key === "image") {
     return <span className="sample-product-image" />;
+  }
+
+  if (key === "onHand") {
+    return line.onHand;
+  }
+
+  if (key === "qr") {
+    return <span className="sample-qr-code" />;
   }
 
   if (key === "variant") {
@@ -1586,6 +1651,47 @@ function collapseEditorSelectionToEnd(editor: HTMLDivElement) {
   selection.addRange(range);
 }
 
+function applyRichStyleToContents(
+  container: HTMLDivElement,
+  style: Partial<CSSStyleDeclaration>,
+) {
+  function applyToNode(node: ChildNode) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      if (!node.textContent) {
+        return;
+      }
+
+      const wrapper = document.createElement("span");
+
+      Object.assign(wrapper.style, style);
+      wrapper.textContent = node.textContent;
+      node.replaceWith(wrapper);
+      return;
+    }
+
+    if (!(node instanceof HTMLElement)) {
+      return;
+    }
+
+    Object.assign(node.style, style);
+    Array.from(node.childNodes).forEach(applyToNode);
+  }
+
+  Array.from(container.childNodes).forEach(applyToNode);
+}
+
+function richHtmlWithWholeStyle(
+  block: TemplateBlock,
+  style: Partial<CSSStyleDeclaration>,
+) {
+  const editor = document.createElement("div");
+
+  editor.innerHTML = templateHtmlToEditorHtml(textBlockHtml(block));
+  applyRichStyleToContents(editor, style);
+
+  return editorElementToTemplateHtml(editor);
+}
+
 function RichTextBox({
   block,
   className,
@@ -1702,12 +1808,15 @@ function TemplateDesigner({
   );
   const [mentionMenu, setMentionMenu] = useState<MentionMenuState | null>(null);
   const [pageSetupOpen, setPageSetupOpen] = useState(false);
+  const [tableSetupOpen, setTableSetupOpen] = useState(false);
   const [activeTextFormat, setActiveTextFormat] =
     useState<TextFormatState | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const inlineTextRef = useRef<HTMLDivElement | null>(null);
   const inspectorTextRef = useRef<HTMLDivElement | null>(null);
   const activeRichEditorRef = useRef<HTMLDivElement | null>(null);
+  const saveTemplateButtonRef = useRef<HTMLButtonElement | null>(null);
   const richSelectionRef = useRef<RichTextSelection | null>(null);
   const operationRef = useRef<CanvasOperation | null>(null);
   const blockClipboardRef = useRef<TemplateBlock | null>(null);
@@ -1741,12 +1850,22 @@ function TemplateDesigner({
   const dirty =
     name !== template.name ||
     JSON.stringify(design) !== JSON.stringify(template.design);
+  const canSubmitTemplate =
+    !saving && canSaveTemplate && design.blocks.length > 0;
   const toolbarTextFormat =
     activeTextFormat?.blockId === selectedBlock?.id
       ? activeTextFormat
       : selectedBlock
         ? textFormatFromBlock(selectedBlock)
         : null;
+  const pageSizeLabel =
+    PAGE_SIZE_OPTIONS.find((option) => option.value === design.page.size)
+      ?.label || "Custom";
+  const blockCountLabel = `${design.blocks.length} block${
+    design.blocks.length === 1 ? "" : "s"
+  }`;
+  const tableSetupBlock =
+    tableSetupOpen && selectedBlock?.type === "items" ? selectedBlock : null;
 
   useEffect(() => {
     const nextDesign = copyDesign(template.design);
@@ -1761,6 +1880,7 @@ function TemplateDesigner({
     setEditingTextBlockId(null);
     setEditingItemsBlockId(null);
     setMentionMenu(null);
+    setTableSetupOpen(false);
     setActiveTextFormat(null);
     setSelectedId(nextDesign.blocks[0]?.id || "");
   }, [template.design, template.name]);
@@ -1814,6 +1934,37 @@ function TemplateDesigner({
       setSelectedItemColumnKey(selectedItemColumns[0].key);
     }
   }, [selectedBlock?.type, selectedItemColumnKey, selectedItemColumns]);
+
+  useEffect(() => {
+    if (selectedBlock?.type !== "items") {
+      setTableSetupOpen(false);
+    }
+  }, [selectedBlock?.type]);
+
+  useEffect(() => {
+    function handleSelectionChange() {
+      const editor = activeRichEditorRef.current;
+
+      if (!editor?.isConnected) {
+        return;
+      }
+
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+
+      if (!range || !editor.contains(range.commonAncestorContainer)) {
+        return;
+      }
+
+      rememberRichSelection(editor);
+    }
+
+    document.addEventListener("selectionchange", handleSelectionChange);
+
+    return () => {
+      document.removeEventListener("selectionchange", handleSelectionChange);
+    };
+  });
 
   function updateBlock(id: string, patch: Partial<TemplateBlock>) {
     setDesign((current) => ({
@@ -1968,6 +2119,7 @@ function TemplateDesigner({
     setEditingTextBlockId(null);
     setEditingItemsBlockId(null);
     setMentionMenu(null);
+    setTableSetupOpen(false);
     setActiveTextFormat(null);
     setSelectedId(nextDesign.blocks[0]?.id || "");
   }
@@ -1992,6 +2144,7 @@ function TemplateDesigner({
     setEditingTextBlockId(null);
     setEditingItemsBlockId(null);
     setMentionMenu(null);
+    setTableSetupOpen(false);
     setActiveTextFormat(null);
     setSelectedId(nextDesign.blocks[0]?.id || "");
   }
@@ -2045,6 +2198,7 @@ function TemplateDesigner({
     setEditingTextBlockId(null);
     setEditingItemsBlockId(null);
     setMentionMenu(null);
+    setTableSetupOpen(false);
     setActiveTextFormat(null);
     activeRichEditorRef.current = null;
     richSelectionRef.current = null;
@@ -2056,10 +2210,45 @@ function TemplateDesigner({
     setEditingTextBlockId(null);
     setEditingItemsBlockId(null);
     setMentionMenu(null);
+    setTableSetupOpen(false);
     setActiveTextFormat(null);
     activeRichEditorRef.current = null;
     richSelectionRef.current = null;
     window.getSelection()?.removeAllRanges();
+  }
+
+  function zoomBy(delta: number) {
+    setZoom((current) => normalizeZoom(current + delta));
+  }
+
+  function resetZoom() {
+    setZoom(1);
+  }
+
+  function fitCanvasToStage() {
+    const stage = stageRef.current;
+
+    if (!stage) {
+      setZoom(0.65);
+      return;
+    }
+
+    const styles = window.getComputedStyle(stage);
+    const paddingX =
+      Number.parseFloat(styles.paddingLeft) +
+      Number.parseFloat(styles.paddingRight);
+    const paddingY =
+      Number.parseFloat(styles.paddingTop) +
+      Number.parseFloat(styles.paddingBottom);
+    const availableWidth = Math.max(320, stage.clientWidth - paddingX - 16);
+    const availableHeight = Math.max(360, stage.clientHeight - paddingY - 16);
+    const fittedZoom = Math.min(
+      1,
+      availableWidth / design.page.width,
+      availableHeight / design.page.height,
+    );
+
+    setZoom(normalizeZoom(fittedZoom));
   }
 
   function handleStagePointerDown(event: PointerEvent<HTMLDivElement>) {
@@ -2219,9 +2408,7 @@ function TemplateDesigner({
 
     event.preventDefault();
     event.stopPropagation();
-    setZoom((current) =>
-      normalizeZoom(current + (event.deltaY < 0 ? 0.05 : -0.05)),
-    );
+    zoomBy(event.deltaY < 0 ? 0.05 : -0.05);
   }
 
   function nudgeSelectedBlock(deltaX: number, deltaY: number) {
@@ -2395,10 +2582,18 @@ function TemplateDesigner({
       });
   }
 
-  function syncRichTextElement(element: HTMLDivElement, block: TemplateBlock) {
+  function syncRichTextElement(
+    element: HTMLDivElement,
+    block: TemplateBlock,
+    extraPatch: Partial<TemplateBlock> = {},
+  ) {
     const html = editorElementToTemplateHtml(element);
     const text = htmlToPlainText(html);
-    const patch: Partial<TemplateBlock> = { text, textHtml: html };
+    const patch: Partial<TemplateBlock> = {
+      ...extraPatch,
+      text,
+      textHtml: html,
+    };
 
     syncRichTextEditors(block.id, html, element);
 
@@ -2703,10 +2898,20 @@ function TemplateDesigner({
     if (!editor) {
       const patch = blockPatchFromRichStyle(style, block);
 
-      updateBlock(block.id, patch);
       if (block.type === "text") {
+        const nextHtml = richHtmlWithWholeStyle(block, style);
+
+        syncRichTextEditors(block.id, nextHtml);
+        updateBlock(block.id, {
+          ...patch,
+          text: htmlToPlainText(nextHtml),
+          textHtml: nextHtml,
+        });
         setActiveTextFormat(textFormatFromBlock({ ...block, ...patch }));
+        return;
       }
+
+      updateBlock(block.id, patch);
       return;
     }
 
@@ -2747,17 +2952,19 @@ function TemplateDesigner({
       }
 
       const blockPatch = blockPatchFromRichStyle(style, block);
+      const offsets = editorSelectionOffsets(editor);
 
-      updateBlock(block.id, blockPatch);
-      setActiveTextFormat(textFormatFromBlock({ ...block, ...blockPatch }));
       Object.assign(editor.style, style);
+      applyRichStyleToContents(editor, style);
+      syncRichTextElement(editor, block, blockPatch);
 
-      selectEditorContents(editor);
-
-      if (!selection.rangeCount || !editor.textContent?.trim()) {
-        rememberRichSelection(editor);
-        return;
+      if (offsets) {
+        restoreEditorSelection(editor, offsets);
       }
+
+      rememberRichSelection(editor);
+      setActiveTextFormat(textFormatFromBlock({ ...block, ...blockPatch }));
+      return;
     }
 
     const selectedRange = selection.getRangeAt(0);
@@ -2951,12 +3158,18 @@ function TemplateDesigner({
   }
 
   function handleTemplateEditorKeyDown(event: KeyboardEvent<HTMLFormElement>) {
-    if (targetAcceptsTextInput(event.target)) {
+    const isModifier = event.metaKey || event.ctrlKey;
+    const key = event.key.toLowerCase();
+
+    if (isModifier && key === "s") {
+      event.preventDefault();
+      saveTemplateButtonRef.current?.click();
       return;
     }
 
-    const isModifier = event.metaKey || event.ctrlKey;
-    const key = event.key.toLowerCase();
+    if (targetAcceptsTextInput(event.target)) {
+      return;
+    }
 
     if (isModifier && key === "z") {
       event.preventDefault();
@@ -2990,6 +3203,48 @@ function TemplateDesigner({
     if (isModifier && key === "v") {
       event.preventDefault();
       pasteBlockFromClipboard();
+      return;
+    }
+
+    if (isModifier && key === "d") {
+      event.preventDefault();
+      duplicateSelectedBlock();
+      return;
+    }
+
+    if (isModifier && (key === "+" || key === "=")) {
+      event.preventDefault();
+      zoomBy(0.05);
+      return;
+    }
+
+    if (isModifier && key === "-") {
+      event.preventDefault();
+      zoomBy(-0.05);
+      return;
+    }
+
+    if (isModifier && key === "0") {
+      event.preventDefault();
+      resetZoom();
+      return;
+    }
+
+    if (isModifier && event.key === "[") {
+      event.preventDefault();
+      moveLayer(-1);
+      return;
+    }
+
+    if (isModifier && event.key === "]") {
+      event.preventDefault();
+      moveLayer(1);
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      clearCanvasSelection();
       return;
     }
 
@@ -3046,10 +3301,11 @@ function TemplateDesigner({
               <span aria-hidden="true">↶</span> Revert
             </button>
             <button
+              ref={saveTemplateButtonRef}
               type="submit"
               name="intent"
               value="save-template"
-              disabled={saving || !canSaveTemplate || !design.blocks.length}
+              disabled={!canSubmitTemplate}
             >
               <span aria-hidden="true">✓</span> Save
             </button>
@@ -3127,6 +3383,7 @@ function TemplateDesigner({
           <label>
             <span>Font</span>
             <select
+              disabled={!selectedBlock}
               value={toolbarTextFormat?.fontFamily || FONT_FAMILIES[0].value}
               onChange={(event) =>
                 applyRichTextFontFamily(event.currentTarget.value)
@@ -3142,6 +3399,7 @@ function TemplateDesigner({
           <label className="word-size-control">
             <span>Size</span>
             <select
+              disabled={!selectedBlock}
               value={String(toolbarTextFormat?.fontSize || 12)}
               onChange={(event) =>
                 applyRichTextFontSize(event.currentTarget.value)
@@ -3157,6 +3415,7 @@ function TemplateDesigner({
           <label className="word-line-control">
             <span>Line</span>
             <select
+              disabled={!selectedBlock}
               value={String(toolbarTextFormat?.lineHeight || 1.4)}
               onChange={(event) =>
                 applyRichTextLineHeight(event.currentTarget.value)
@@ -3169,10 +3428,12 @@ function TemplateDesigner({
               ))}
             </select>
           </label>
+          <span className="word-divider" aria-hidden="true" />
           <span className="word-button-group">
             <button
               type="button"
               title="Bold"
+              disabled={!selectedBlock}
               className={
                 toolbarTextFormat?.fontWeight === "700" ? "active" : ""
               }
@@ -3184,6 +3445,7 @@ function TemplateDesigner({
             <button
               type="button"
               title="Italic"
+              disabled={!selectedBlock}
               className={toolbarTextFormat?.italic ? "active" : ""}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => applyRichTextCommand("italic")}
@@ -3193,6 +3455,7 @@ function TemplateDesigner({
             <button
               type="button"
               title="Underline"
+              disabled={!selectedBlock}
               className={toolbarTextFormat?.underline ? "active" : ""}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => applyRichTextCommand("underline")}
@@ -3204,12 +3467,14 @@ function TemplateDesigner({
             <span>Color</span>
             <input
               type="color"
+              disabled={!selectedBlock}
               value={toolbarTextFormat?.color || "#111827"}
               onChange={(event) =>
                 wrapRichSelection({ color: event.currentTarget.value })
               }
             />
           </label>
+          <span className="word-divider" aria-hidden="true" />
           <span className="word-button-group">
             {(["left", "center", "right"] as const).map((align) => (
               <button
@@ -3254,6 +3519,18 @@ function TemplateDesigner({
             </span>
             Insert field
           </button>
+          <button
+            type="button"
+            disabled={selectedBlock?.type !== "items"}
+            onClick={() => setTableSetupOpen(true)}
+            title="Edit item table columns and styles"
+          >
+            <span className="word-icon" aria-hidden="true">
+              ▦
+            </span>
+            Columns
+          </button>
+          <span className="word-divider" aria-hidden="true" />
           <span className="word-button-group">
             <button
               type="button"
@@ -3318,6 +3595,24 @@ function TemplateDesigner({
               ))}
             </select>
           </label>
+          <span className="word-button-group word-zoom-buttons">
+            <button
+              type="button"
+              title="Zoom out"
+              onClick={() => zoomBy(-0.05)}
+            >
+              −
+            </button>
+            <button type="button" title="Zoom in" onClick={() => zoomBy(0.05)}>
+              +
+            </button>
+            <button type="button" title="Actual size" onClick={resetZoom}>
+              100%
+            </button>
+            <button type="button" title="Fit page" onClick={fitCanvasToStage}>
+              Fit
+            </button>
+          </span>
           <label className="word-checkbox">
             <input
               type="checkbox"
@@ -3337,8 +3632,9 @@ function TemplateDesigner({
 
               <div
                 className="template-stage"
+                ref={stageRef}
                 onPointerDown={handleStagePointerDown}
-                onWheelCapture={handleStageWheel}
+                onWheel={handleStageWheel}
               >
                 <div
                   className="template-canvas-space"
@@ -3368,6 +3664,11 @@ function TemplateDesigner({
                         top: design.page.marginTop || 0,
                       }}
                     />
+                    {design.blocks.length === 0 ? (
+                      <div className="template-empty-canvas">
+                        Blank packing slip
+                      </div>
+                    ) : null}
                     {design.blocks.map((block) => {
                       const selected = block.id === selectedId;
                       const editingText =
@@ -3484,6 +3785,7 @@ function TemplateDesigner({
                                     />
                                     <button
                                       type="button"
+                                      title="Move column left"
                                       disabled={index === 0}
                                       onClick={() =>
                                         moveItemColumnInBlock(
@@ -3493,10 +3795,11 @@ function TemplateDesigner({
                                         )
                                       }
                                     >
-                                      Up
+                                      ↑
                                     </button>
                                     <button
                                       type="button"
+                                      title="Move column right"
                                       disabled={index === columns.length - 1}
                                       onClick={() =>
                                         moveItemColumnInBlock(
@@ -3506,7 +3809,7 @@ function TemplateDesigner({
                                         )
                                       }
                                     >
-                                      Down
+                                      ↓
                                     </button>
                                   </div>
                                 ),
@@ -4187,6 +4490,15 @@ function TemplateDesigner({
             <div className="word-statusbar">
               <span>Page 1</span>
               <span>
+                {pageSizeLabel} {design.page.width} x {design.page.height}
+              </span>
+              <span>
+                Margins {design.page.marginTop || 0}/
+                {design.page.marginRight || 0}/{design.page.marginBottom || 0}/
+                {design.page.marginLeft || 0}
+              </span>
+              <span>{blockCountLabel}</span>
+              <span>
                 {selectedBlock
                   ? `${blockTypeLabel(selectedBlock)}: ${blockLabel(selectedBlock)}`
                   : "No block selected"}
@@ -4202,6 +4514,181 @@ function TemplateDesigner({
           </div>
         </div>
       </Form>
+      {tableSetupBlock ? (
+        <div className="page-setup-backdrop">
+          <div className="table-setup-dialog" role="dialog" aria-modal="true">
+            <div className="page-setup-heading">
+              <div>
+                <strong>Item table columns</strong>
+                <small>Line items table</small>
+              </div>
+              <button type="button" onClick={() => setTableSetupOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="table-column-grid">
+              {selectedItemColumns.map((column, index, columns) => (
+                <div className="table-column-row" key={column.key}>
+                  <label className="mini-toggle">
+                    <input
+                      type="checkbox"
+                      checked={column.enabled}
+                      onChange={(event) =>
+                        toggleItemColumnInBlock(
+                          tableSetupBlock,
+                          column.key,
+                          event.currentTarget.checked,
+                        )
+                      }
+                    />
+                    <span>{column.key}</span>
+                  </label>
+                  <label>
+                    <span>Label</span>
+                    <input
+                      value={column.label}
+                      onChange={(event) =>
+                        updateItemColumnInBlock(tableSetupBlock, column.key, {
+                          label: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Width</span>
+                    <input
+                      min="32"
+                      type="number"
+                      value={column.width}
+                      onChange={(event) =>
+                        updateItemColumnInBlock(tableSetupBlock, column.key, {
+                          width: Number(event.currentTarget.value),
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Align</span>
+                    <select
+                      value={column.align}
+                      onChange={(event) =>
+                        updateItemColumnInBlock(tableSetupBlock, column.key, {
+                          align: event.currentTarget
+                            .value as EditorItemColumn["align"],
+                        })
+                      }
+                    >
+                      <option value="left">Left</option>
+                      <option value="center">Center</option>
+                      <option value="right">Right</option>
+                    </select>
+                  </label>
+                  <div className="table-column-style-controls">
+                    <span className="field-label">Header</span>
+                    <input
+                      aria-label={`${column.key} header size`}
+                      min="7"
+                      type="number"
+                      value={column.labelFontSize}
+                      onChange={(event) =>
+                        updateItemColumnInBlock(tableSetupBlock, column.key, {
+                          labelFontSize: Number(event.currentTarget.value),
+                        })
+                      }
+                    />
+                    <input
+                      aria-label={`${column.key} header color`}
+                      type="color"
+                      value={column.labelColor}
+                      onChange={(event) =>
+                        updateItemColumnInBlock(tableSetupBlock, column.key, {
+                          labelColor: event.currentTarget.value,
+                        })
+                      }
+                    />
+                    <button
+                      aria-pressed={column.labelFontWeight === "700"}
+                      className={
+                        column.labelFontWeight === "700" ? "active" : ""
+                      }
+                      type="button"
+                      onClick={() =>
+                        updateItemColumnInBlock(tableSetupBlock, column.key, {
+                          labelFontWeight:
+                            column.labelFontWeight === "700" ? "400" : "700",
+                        })
+                      }
+                    >
+                      B
+                    </button>
+                  </div>
+                  <div className="table-column-style-controls">
+                    <span className="field-label">Rows</span>
+                    <input
+                      aria-label={`${column.key} row size`}
+                      min="7"
+                      type="number"
+                      value={column.valueFontSize}
+                      onChange={(event) =>
+                        updateItemColumnInBlock(tableSetupBlock, column.key, {
+                          valueFontSize: Number(event.currentTarget.value),
+                        })
+                      }
+                    />
+                    <input
+                      aria-label={`${column.key} row color`}
+                      type="color"
+                      value={column.valueColor}
+                      onChange={(event) =>
+                        updateItemColumnInBlock(tableSetupBlock, column.key, {
+                          valueColor: event.currentTarget.value,
+                        })
+                      }
+                    />
+                    <button
+                      aria-pressed={column.valueFontWeight === "700"}
+                      className={
+                        column.valueFontWeight === "700" ? "active" : ""
+                      }
+                      type="button"
+                      onClick={() =>
+                        updateItemColumnInBlock(tableSetupBlock, column.key, {
+                          valueFontWeight:
+                            column.valueFontWeight === "700" ? "400" : "700",
+                        })
+                      }
+                    >
+                      B
+                    </button>
+                  </div>
+                  <span className="table-column-actions">
+                    <button
+                      type="button"
+                      title="Move column left"
+                      disabled={index === 0}
+                      onClick={() =>
+                        moveItemColumnInBlock(tableSetupBlock, column.key, -1)
+                      }
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      title="Move column right"
+                      disabled={index === columns.length - 1}
+                      onClick={() =>
+                        moveItemColumnInBlock(tableSetupBlock, column.key, 1)
+                      }
+                    >
+                      ↓
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {pageSetupOpen ? (
         <div className="page-setup-backdrop">
           <div className="page-setup-dialog" role="dialog" aria-modal="true">
@@ -4317,6 +4804,150 @@ function TemplateDesigner({
   );
 }
 
+function RestockDocumentPanel({
+  contentHtml,
+  saving,
+}: {
+  contentHtml: string;
+  saving: boolean;
+}) {
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const hiddenInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+
+    if (!editor || document.activeElement === editor) {
+      return;
+    }
+
+    editor.innerHTML = contentHtml;
+
+    if (hiddenInputRef.current) {
+      hiddenInputRef.current.value = contentHtml;
+    }
+  }, [contentHtml]);
+
+  function syncDocumentHtml() {
+    if (!hiddenInputRef.current || !editorRef.current) {
+      return;
+    }
+
+    hiddenInputRef.current.value = editorRef.current.innerHTML;
+  }
+
+  function runRestockEditorCommand(command: string, value?: string) {
+    editorRef.current?.focus();
+    document.execCommand(command, false, value);
+    syncDocumentHtml();
+  }
+
+  return (
+    <section className="app-card restock-card">
+      <div className="restock-header">
+        <div>
+          <div className="app-card-header">Restock document</div>
+          <p>
+            QR scans from packing slips append low-inventory products here. Edit
+            the list before downloading or sending it to purchasing.
+          </p>
+        </div>
+        <a className="button-link" href="/app/restock-download">
+          Download HTML
+        </a>
+      </div>
+
+      <Form method="post" className="restock-form" onSubmit={syncDocumentHtml}>
+        <input type="hidden" name="intent" value="save-restock-document" />
+        <input
+          ref={hiddenInputRef}
+          type="hidden"
+          name="restockDocumentHtml"
+          defaultValue={contentHtml}
+        />
+        <div className="restock-toolbar" aria-label="Restock editor toolbar">
+          <button
+            type="button"
+            onClick={() => runRestockEditorCommand("bold")}
+            title="Bold"
+          >
+            <strong>B</strong>
+          </button>
+          <button
+            type="button"
+            onClick={() => runRestockEditorCommand("italic")}
+            title="Italic"
+          >
+            <em>I</em>
+          </button>
+          <button
+            type="button"
+            onClick={() => runRestockEditorCommand("underline")}
+            title="Underline"
+          >
+            <span className="underline-icon">U</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => runRestockEditorCommand("formatBlock", "h2")}
+          >
+            H2
+          </button>
+          <button
+            type="button"
+            onClick={() => runRestockEditorCommand("formatBlock", "p")}
+          >
+            P
+          </button>
+          <button
+            type="button"
+            onClick={() => runRestockEditorCommand("insertUnorderedList")}
+            title="Bulleted list"
+          >
+            • List
+          </button>
+          <button
+            type="button"
+            onClick={() => runRestockEditorCommand("insertOrderedList")}
+            title="Numbered list"
+          >
+            1. List
+          </button>
+        </div>
+        <div
+          ref={editorRef}
+          className="restock-editor"
+          contentEditable
+          dangerouslySetInnerHTML={{ __html: contentHtml }}
+          onInput={syncDocumentHtml}
+          role="textbox"
+          aria-multiline="true"
+          suppressContentEditableWarning
+        />
+        <div className="restock-actions">
+          <button type="submit" disabled={saving}>
+            Save document
+          </button>
+        </div>
+      </Form>
+
+      <Form
+        method="post"
+        onSubmit={(event) => {
+          if (!window.confirm("Clear the restock document?")) {
+            event.preventDefault();
+          }
+        }}
+      >
+        <input type="hidden" name="intent" value="clear-restock-document" />
+        <button className="danger-button" type="submit" disabled={saving}>
+          Clear document
+        </button>
+      </Form>
+    </section>
+  );
+}
+
 export default function OrderPrinterDashboard() {
   const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
@@ -4405,6 +5036,7 @@ export default function OrderPrinterDashboard() {
                   ["rule", "Automation rule"],
                   ["agent", "Print agent"],
                   ["jobs", "Recent jobs"],
+                  ["restock", "Restock list"],
                 ] as const
               ).map(([tab, label]) => (
                 <button
@@ -4422,6 +5054,10 @@ export default function OrderPrinterDashboard() {
             {activeOperationsTab === "rule" ? (
               <section className="app-card">
                 <div className="app-card-header">Automation rule</div>
+                <p className="rule-note">
+                  Automatic printing is restricted to Canadian Off Grid orders
+                  containing EG4 Electronics vendor items or EG4 type items.
+                </p>
                 <Form method="post" className="settings-form">
                   <input type="hidden" name="intent" value="save-rule" />
                   <label>
@@ -4642,6 +5278,13 @@ export default function OrderPrinterDashboard() {
                   </p>
                 )}
               </section>
+            ) : null}
+
+            {activeOperationsTab === "restock" ? (
+              <RestockDocumentPanel
+                contentHtml={data.restockDocumentHtml}
+                saving={saving}
+              />
             ) : null}
           </aside>
         ) : null}
