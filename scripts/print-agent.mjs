@@ -18,6 +18,7 @@ const packaged = Boolean(process.pkg);
 const appDir = packaged ? dirname(process.execPath) : process.cwd();
 const config = await loadConfig();
 const windowsConfig = objectConfig(config.windows);
+const updatesConfig = objectConfig(config.updates);
 
 const appUrl = (
   process.env.SHOPIFY_PRINTER_AGENT_URL ||
@@ -49,6 +50,22 @@ const debugPrintDir = resolve(
     stringConfig(config.debugPrintDir) ||
     stringConfig(config.debug?.printDir) ||
     join(appDir, "debug-prints"),
+);
+const autoUpdatesEnabled =
+  platform() === "win32" &&
+  packaged &&
+  !["0", "false", "no", "off"].includes(
+    String(
+      process.env.SHOPIFY_PRINTER_AUTO_UPDATE ??
+        updatesConfig.enabled ??
+        "true",
+    )
+      .trim()
+      .toLowerCase(),
+  );
+const updateCheckIntervalMs = numberConfig(
+  process.env.SHOPIFY_PRINTER_UPDATE_CHECK_MS || updatesConfig.checkIntervalMs,
+  60 * 60 * 1000,
 );
 
 let stopped = false;
@@ -283,6 +300,53 @@ async function syncMissedOrders(reason) {
     const message = error instanceof Error ? error.message : "Sync failed.";
     console.error(`Missed-order sync (${reason}) failed: ${message}`);
   }
+}
+
+function updateManagerPath() {
+  return join(appDir, "COGOrderPrinterAgentSetup.exe");
+}
+
+function checkForAgentUpdate(reason) {
+  if (!autoUpdatesEnabled) {
+    return false;
+  }
+
+  const manager = updateManagerPath();
+
+  if (!existsSync(manager)) {
+    console.error(`Auto-update skipped: ${manager} is missing.`);
+    return false;
+  }
+
+  console.log(`Checking for print agent updates (${reason})...`);
+  const result = spawnSync(
+    manager,
+    ["update", "--quiet", "--from-agent"],
+    {
+      cwd: appDir,
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
+
+  if (result.status === 10) {
+    console.log("Print agent update staged. Exiting so the service can restart.");
+    stopped = true;
+    process.exit(0);
+  }
+
+  if (result.status && result.status !== 0) {
+    console.error(
+      `Auto-update check failed: ${result.stderr || result.stdout || result.status}`,
+    );
+    return false;
+  }
+
+  if (result.stdout?.trim()) {
+    console.log(result.stdout.trim());
+  }
+
+  return false;
 }
 
 function browserCandidates() {
@@ -862,11 +926,13 @@ function sleep(ms) {
 
 async function main() {
   requiredConfig();
+  checkForAgentUpdate("startup");
   await registerPrinters();
   await syncMissedOrders("startup");
 
   let lastRegister = Date.now();
   let lastSync = Date.now();
+  let lastUpdateCheck = Date.now();
   let lastLoopAt = Date.now();
 
   while (!stopped) {
@@ -874,13 +940,20 @@ async function main() {
     const sleepGap = now - lastLoopAt;
 
     if (sleepGap > Math.max(pollIntervalMs * 3, 60 * 1000)) {
+      checkForAgentUpdate("wake");
       await registerPrinters();
       await syncMissedOrders("wake");
       lastRegister = Date.now();
       lastSync = Date.now();
+      lastUpdateCheck = Date.now();
     } else if (now - lastSync > 15 * 60 * 1000) {
       await syncMissedOrders("interval");
       lastSync = Date.now();
+    }
+
+    if (Date.now() - lastUpdateCheck > updateCheckIntervalMs) {
+      checkForAgentUpdate("interval");
+      lastUpdateCheck = Date.now();
     }
 
     lastLoopAt = Date.now();

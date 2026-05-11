@@ -42,14 +42,18 @@ type DashboardRule = {
   locationName: string;
   printerName: string;
   enabled: boolean;
-} | null;
+};
 
 export type DashboardData = {
   shop: string;
   agentToken: string;
   locations: LocationOption[];
+  vendorOptions: string[];
+  selectedVendorNames: string[];
+  selectedLocationIds: string[];
   printers: DashboardPrinter[];
-  rule: DashboardRule;
+  rule: DashboardRule | null;
+  rules: DashboardRule[];
   jobs: DashboardJob[];
   template: DashboardTemplate;
   templates: DashboardTemplate[];
@@ -339,9 +343,8 @@ type AgentPrinterInput = {
 };
 
 const LOCAL_AGENT_PROVIDER = "local-agent";
-const REQUIRED_FULFILLMENT_LOCATION_NAME = "Canadian Off Grid";
-const REQUIRED_VENDOR = "EG4 Electronics";
-const REQUIRED_PRODUCT_TYPE = "EG4";
+const DEFAULT_VENDOR_FILTER = ["EG4 Electronics"];
+const PICKUP_SHIP_TO_TEXT = "Pickup in store at Canadian Off Grid";
 const RESTOCK_DOCUMENT_DEFAULT_HTML =
   "<h2>COG restock list</h2><p>Scan low-inventory product QR codes from packing slips to add items here.</p>";
 const RESTOCK_SCAN_TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000;
@@ -621,6 +624,20 @@ const LOCATIONS_QUERY = `#graphql
         name
         isActive
         fulfillsOnlineOrders
+      }
+    }
+  }
+`;
+
+const PRODUCT_VENDOR_QUERY = `#graphql
+  query OrderPrinterProductVendors($first: Int!, $after: String) {
+    products(first: $first, after: $after) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        vendor
       }
     }
   }
@@ -1213,6 +1230,51 @@ function parseTemplateDesignJson(value: unknown) {
   }
 }
 
+function normalizedFilterName(value: unknown) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 180);
+}
+
+function uniqueFilterNames(values: unknown[]) {
+  const names = new Map<string, string>();
+
+  for (const value of values) {
+    const name = normalizedFilterName(value);
+
+    if (name) {
+      names.set(normalizedMatchText(name), name);
+    }
+  }
+
+  return [...names.values()].sort((a, b) => a.localeCompare(b));
+}
+
+function parseVendorFilterJson(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) {
+    return DEFAULT_VENDOR_FILTER;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+
+    if (Array.isArray(parsed)) {
+      const names = uniqueFilterNames(parsed);
+
+      return names.length ? names : DEFAULT_VENDOR_FILTER;
+    }
+  } catch {
+    return DEFAULT_VENDOR_FILTER;
+  }
+
+  return DEFAULT_VENDOR_FILTER;
+}
+
+function vendorFilterJson(values: unknown[]) {
+  return JSON.stringify(uniqueFilterNames(values));
+}
+
 async function graphqlJson<T>(
   admin: AdminGraphqlClient,
   query: string,
@@ -1460,6 +1522,42 @@ export async function fetchLocations(admin: AdminGraphqlClient) {
   return data.locations.nodes.filter((location) => location.isActive);
 }
 
+export async function fetchProductVendors(
+  admin: AdminGraphqlClient,
+  limit = 1000,
+) {
+  type ProductVendorData = {
+    products: {
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      nodes: { vendor: string | null }[];
+    };
+  };
+  const vendors: string[] = [];
+  let after: string | null = null;
+
+  while (vendors.length < limit) {
+    const first = Math.min(250, limit - vendors.length);
+    const data: ProductVendorData = await graphqlJson<ProductVendorData>(
+      admin,
+      PRODUCT_VENDOR_QUERY,
+      { first, after },
+    );
+
+    vendors.push(...data.products.nodes.map((product) => product.vendor || ""));
+
+    if (
+      !data.products.pageInfo.hasNextPage ||
+      !data.products.pageInfo.endCursor
+    ) {
+      break;
+    }
+
+    after = data.products.pageInfo.endCursor;
+  }
+
+  return uniqueFilterNames(vendors);
+}
+
 export async function loadDashboard(
   admin: AdminGraphqlClient,
   shop: string,
@@ -1468,7 +1566,8 @@ export async function loadDashboard(
   const [
     settings,
     locations,
-    rule,
+    rules,
+    vendorOptions,
     printers,
     jobs,
     reprintOrders,
@@ -1476,10 +1575,11 @@ export async function loadDashboard(
   ] = await Promise.all([
     ensureAppSettings(shop),
     fetchLocations(admin),
-    prisma.printerRule.findFirst({
+    prisma.printerRule.findMany({
       where: { shop, printerProvider: LOCAL_AGENT_PROVIDER },
-      orderBy: [{ enabled: "desc" }, { updatedAt: "desc" }],
+      orderBy: [{ enabled: "desc" }, { locationName: "asc" }],
     }),
+    fetchProductVendors(admin),
     prisma.registeredPrinter.findMany({
       where: { shop, active: true },
       orderBy: [{ isDefault: "desc" }, { name: "asc" }],
@@ -1492,26 +1592,31 @@ export async function loadDashboard(
     loadReprintOrdersForDashboard(admin, shop, options.includeReprintOrders),
     loadRestockDocument(shop),
   ]);
+  const selectedVendorNames = parseVendorFilterJson(settings.vendorFilterJson);
+  const rule = rules[0] || null;
+  const dashboardRules = rules.map((savedRule) => ({
+    id: savedRule.id,
+    locationId: savedRule.locationId,
+    locationName: savedRule.locationName,
+    printerName: savedRule.printerName,
+    enabled: savedRule.enabled,
+  }));
 
   return {
     shop,
     agentToken: settings.agentToken,
     locations,
+    vendorOptions: uniqueFilterNames([...vendorOptions, ...selectedVendorNames]),
+    selectedVendorNames,
+    selectedLocationIds: rules.map((savedRule) => savedRule.locationId),
     printers: printers.map((printer) => ({
       name: printer.name,
       isDefault: printer.isDefault,
       agentName: printer.agentName,
       lastSeenAt: printer.lastSeenAt.toISOString(),
     })),
-    rule: rule
-      ? {
-          id: rule.id,
-          locationId: rule.locationId,
-          locationName: rule.locationName,
-          printerName: rule.printerName,
-          enabled: rule.enabled,
-        }
-      : null,
+    rule: dashboardRules[0] || null,
+    rules: dashboardRules,
     jobs: jobs.map((job) => ({
       id: job.id,
       orderName: job.orderName,
@@ -1535,12 +1640,20 @@ export async function savePrinterRule(
   shop: string,
   formData: FormData,
 ) {
-  const locationId = String(formData.get("locationId") || "");
+  const selectedLocationIds = uniqueFilterNames([
+    ...formData.getAll("locationIds"),
+    formData.get("locationId"),
+  ]);
+  const selectedVendorNames = uniqueFilterNames(formData.getAll("vendorNames"));
   const printerName = normalizePrinterName(formData.get("printerName"));
   const enabled = formData.get("enabled") === "on";
 
-  if (!locationId) {
-    throw new Error("Choose a fulfillment location.");
+  if (!selectedLocationIds.length) {
+    throw new Error("Choose at least one fulfillment location.");
+  }
+
+  if (!selectedVendorNames.length) {
+    throw new Error("Choose at least one vendor.");
   }
 
   if (!printerName) {
@@ -1558,16 +1671,12 @@ export async function savePrinterRule(
     }),
   ]);
 
-  const location = locations.find((option) => option.id === locationId);
+  const selectedLocations = selectedLocationIds.map((locationId) =>
+    locations.find((option) => option.id === locationId),
+  );
 
-  if (!location) {
-    throw new Error("That fulfillment location is not available.");
-  }
-
-  if (!isRequiredFulfillmentLocation(location.name)) {
-    throw new Error(
-      `COG Order Printer is restricted to the ${REQUIRED_FULFILLMENT_LOCATION_NAME} fulfillment location.`,
-    );
+  if (selectedLocations.some((location) => !location)) {
+    throw new Error("One of those fulfillment locations is not available.");
   }
 
   if (!printer || !printer.active) {
@@ -1580,31 +1689,37 @@ export async function savePrinterRule(
   );
 
   await prisma.$transaction([
+    prisma.appSettings.update({
+      where: { shop },
+      data: { vendorFilterJson: vendorFilterJson(selectedVendorNames) },
+    }),
     prisma.printerRule.deleteMany({
       where: {
         shop,
-        NOT: { locationId },
+        NOT: { locationId: { in: selectedLocationIds } },
       },
     }),
-    prisma.printerRule.upsert({
-      where: { shop_locationId: { shop, locationId } },
-      update: {
-        locationName: location.name,
-        printerName,
-        printerProvider: LOCAL_AGENT_PROVIDER,
-        printerExternalId: templateStorage,
-        enabled,
-      },
-      create: {
-        shop,
-        locationId,
-        locationName: location.name,
-        printerName,
-        printerProvider: LOCAL_AGENT_PROVIDER,
-        printerExternalId: templateStorage,
-        enabled,
-      },
-    }),
+    ...selectedLocations.map((location) =>
+      prisma.printerRule.upsert({
+        where: { shop_locationId: { shop, locationId: location!.id } },
+        update: {
+          locationName: location!.name,
+          printerName,
+          printerProvider: LOCAL_AGENT_PROVIDER,
+          printerExternalId: templateStorage,
+          enabled,
+        },
+        create: {
+          shop,
+          locationId: location!.id,
+          locationName: location!.name,
+          printerName,
+          printerProvider: LOCAL_AGENT_PROVIDER,
+          printerExternalId: templateStorage,
+          enabled,
+        },
+      }),
+    ),
   ]);
 }
 
@@ -1621,28 +1736,11 @@ function normalizedMatchText(value: string | null | undefined) {
     .toLowerCase();
 }
 
-function isRequiredFulfillmentLocation(name: string | null | undefined) {
-  const normalizedName = normalizedMatchText(name);
-  const requiredName = normalizedMatchText(REQUIRED_FULFILLMENT_LOCATION_NAME);
-
-  return (
-    normalizedName === requiredName ||
-    normalizedName.startsWith(`${requiredName} `) ||
-    normalizedName.startsWith(`${requiredName} -`)
-  );
-}
-
-function fulfillmentOrderIsRequiredLocation(
+function fulfillmentOrderMatchesRuleLocation(
   fulfillmentOrder: FulfillmentOrderNode,
-  locationId: string,
+  rule: { locationId: string },
 ) {
-  return (
-    fulfillmentOrder.assignedLocation?.location?.id === locationId &&
-    isRequiredFulfillmentLocation(
-      fulfillmentOrder.assignedLocation?.name ||
-        fulfillmentOrder.assignedLocation?.location?.name,
-    )
-  );
+  return fulfillmentOrder.assignedLocation?.location?.id === rule.locationId;
 }
 
 function lineRemainingQuantity(line: FulfillmentOrderLineItem) {
@@ -1651,34 +1749,37 @@ function lineRemainingQuantity(line: FulfillmentOrderLineItem) {
   );
 }
 
-function lineMatchesProductRule(line: FulfillmentOrderLineItem) {
+function lineMatchesVendorFilter(
+  line: FulfillmentOrderLineItem,
+  vendorNames: string[],
+) {
   const product = line.lineItem?.product;
+  const selected = new Set(vendorNames.map(normalizedMatchText));
 
-  return (
-    normalizedMatchText(product?.vendor) ===
-      normalizedMatchText(REQUIRED_VENDOR) ||
-    normalizedMatchText(product?.productType) ===
-      normalizedMatchText(REQUIRED_PRODUCT_TYPE)
-  );
+  return selected.size > 0 && selected.has(normalizedMatchText(product?.vendor));
 }
 
 function fulfillmentOrderHasRemainingItems(
   fulfillmentOrder: FulfillmentOrderNode,
+  vendorNames: string[],
 ) {
   return fulfillmentOrder.lineItems.nodes.some(
-    (line) => lineRemainingQuantity(line) > 0 && lineMatchesProductRule(line),
+    (line) =>
+      lineRemainingQuantity(line) > 0 &&
+      lineMatchesVendorFilter(line, vendorNames),
   );
 }
 
 function matchingOpenFulfillmentOrders(
   order: Pick<OrderPrinterOrder | OrderListNode, "fulfillmentOrders">,
-  locationId: string,
+  rule: { locationId: string },
+  vendorNames: string[],
 ) {
   return order.fulfillmentOrders.nodes.filter(
     (fulfillmentOrder) =>
-      fulfillmentOrderIsRequiredLocation(fulfillmentOrder, locationId) &&
+      fulfillmentOrderMatchesRuleLocation(fulfillmentOrder, rule) &&
       isOpenFulfillmentOrder(fulfillmentOrder) &&
-      fulfillmentOrderHasRemainingItems(fulfillmentOrder),
+      fulfillmentOrderHasRemainingItems(fulfillmentOrder, vendorNames),
   );
 }
 
@@ -1758,11 +1859,23 @@ async function loadReprintOrdersForDashboard(
   }
 }
 
-async function getEnabledRule(shop: string) {
-  return prisma.printerRule.findFirst({
+async function getEnabledRules(shop: string) {
+  return prisma.printerRule.findMany({
     where: { shop, enabled: true, printerProvider: LOCAL_AGENT_PROVIDER },
-    orderBy: { updatedAt: "desc" },
+    orderBy: [{ locationName: "asc" }, { updatedAt: "desc" }],
   });
+}
+
+async function getAutomationFilter(shop: string) {
+  const [settings, rules] = await Promise.all([
+    ensureAppSettings(shop),
+    getEnabledRules(shop),
+  ]);
+
+  return {
+    rules,
+    vendorNames: parseVendorFilterJson(settings.vendorFilterJson),
+  };
 }
 
 export async function listReprintableOrders(
@@ -1770,9 +1883,9 @@ export async function listReprintableOrders(
   shop: string,
   limit = 100,
 ) {
-  const rule = await getEnabledRule(shop);
+  const { rules, vendorNames } = await getAutomationFilter(shop);
 
-  if (!rule) {
+  if (!rules.length || !vendorNames.length) {
     return [];
   }
 
@@ -1784,10 +1897,13 @@ export async function listReprintableOrders(
   });
 
   return orders
-    .map((order) => ({
-      order,
-      matchingOrders: matchingOpenFulfillmentOrders(order, rule.locationId),
-    }))
+    .map((order) => {
+      const matchingOrders = rules.flatMap((rule) =>
+        matchingOpenFulfillmentOrders(order, rule, vendorNames),
+      );
+
+      return { order, matchingOrders };
+    })
     .filter(({ matchingOrders }) => matchingOrders.length)
     .map(({ order, matchingOrders }) =>
       reprintOrderSummary(order, matchingOrders),
@@ -1799,9 +1915,10 @@ export async function syncMissedAutoPrints(
   shop: string,
   limit = 100,
 ) {
-  const rule = await getEnabledRule(shop);
+  const { rules, vendorNames } = await getAutomationFilter(shop);
+  const locationIds = rules.map((rule) => rule.locationId);
 
-  if (!rule) {
+  if (!rules.length) {
     return {
       checked: 0,
       queued: 0,
@@ -1811,10 +1928,20 @@ export async function syncMissedAutoPrints(
     };
   }
 
+  if (!vendorNames.length) {
+    return {
+      checked: 0,
+      queued: 0,
+      skipped: 0,
+      reason: "No automation vendors selected.",
+      results: [],
+    };
+  }
+
   const latestAutoPrint = await prisma.printJob.findFirst({
     where: {
       shop,
-      locationId: rule.locationId,
+      locationId: { in: locationIds },
       orderCreatedAt: { not: null },
     },
     orderBy: { orderCreatedAt: "desc" },
@@ -1838,7 +1965,10 @@ export async function syncMissedAutoPrints(
     limit,
   });
   const candidates = orders.filter(
-    (order) => matchingOpenFulfillmentOrders(order, rule.locationId).length,
+    (order) =>
+      rules.some(
+        (rule) => matchingOpenFulfillmentOrders(order, rule, vendorNames).length,
+      ),
   );
   const results = [];
 
@@ -1991,6 +2121,19 @@ function shippingMethod(order: OrderPrinterOrder) {
   return line?.title || "";
 }
 
+function isPickupOrder(order: Pick<OrderPrinterOrder, "shippingAddress" | "shippingLines">) {
+  const method = order.shippingLines.nodes
+    .map((shippingLine) => shippingLine.title || shippingLine.code || "")
+    .join(" ")
+    .toLowerCase();
+
+  return (
+    method.includes("pickup") ||
+    method.includes("pick up") ||
+    (!order.shippingAddress && method.includes("local"))
+  );
+}
+
 function latestTrackingInfo(order: OrderPrinterOrder) {
   for (const fulfillment of order.fulfillments) {
     const tracking = fulfillment.trackingInfo.find(
@@ -2043,6 +2186,10 @@ function templateFieldValue({
     case "location.name":
       return locationName;
     case "shipping.address":
+      if (isPickupOrder(order)) {
+        return PICKUP_SHIP_TO_TEXT;
+      }
+
       return addressLines(order.shippingAddress).join("\n");
     case "billing.address":
       return addressLines(order.billingAddress).join("\n");
@@ -2621,7 +2768,14 @@ async function linesWithRestockQrCodes({
   );
 }
 
-async function buildPackingSlipJob({
+type PackingSlipJobPayload = {
+  ok: true;
+  order: OrderPrinterOrder;
+  rule: Prisma.PrinterRuleGetPayload<object>;
+  html: string;
+};
+
+async function buildPackingSlipJobs({
   admin,
   shop,
   orderId,
@@ -2629,91 +2783,117 @@ async function buildPackingSlipJob({
   admin: AdminGraphqlClient;
   shop: string;
   orderId: string;
-}) {
+}): Promise<
+  | { ok: false; reason: string }
+  | { ok: true; jobs: PackingSlipJobPayload[]; orderName: string }
+> {
   if (!orderId) {
     return {
-      ok: false as const,
+      ok: false,
       reason: "Missing Shopify order id.",
     };
   }
 
-  const rule = await getEnabledRule(shop);
+  const { rules, vendorNames } = await getAutomationFilter(shop);
 
-  if (!rule) {
+  if (!rules.length) {
     return {
-      ok: false as const,
+      ok: false,
       reason: "No enabled local-agent printer rule.",
     };
   }
 
-  if (!isRequiredFulfillmentLocation(rule.locationName)) {
+  if (!vendorNames.length) {
     return {
-      ok: false as const,
-      reason: `Automatic printing is restricted to ${REQUIRED_FULFILLMENT_LOCATION_NAME}.`,
+      ok: false,
+      reason: "No automation vendors selected.",
     };
   }
 
-  const data = await graphqlJson<{ order: OrderPrinterOrder | null }>(
-    admin,
-    ORDER_QUERY,
-    { id: orderId, locationId: rule.locationId },
-  );
+  const jobs: PackingSlipJobPayload[] = [];
+  let orderName = "";
 
-  if (!data.order) {
-    throw new Error(`Shopify order ${orderId} was not found.`);
-  }
-
-  const matchingFulfillmentOrders = matchingOpenFulfillmentOrders(
-    data.order,
-    rule.locationId,
-  );
-
-  if (!matchingFulfillmentOrders.length) {
-    return {
-      ok: false as const,
-      reason: `Order ${data.order.name} is not assigned to ${rule.locationName}.`,
-    };
-  }
-
-  const printableLines = matchingFulfillmentOrders
-    .flatMap((fulfillmentOrder) =>
-      fulfillmentOrder.lineItems.nodes.map(fulfillmentLineToPackingLine),
-    )
-    .filter(
-      (line) =>
-        line.quantity > 0 &&
-        (normalizedMatchText(line.vendor) ===
-          normalizedMatchText(REQUIRED_VENDOR) ||
-          normalizedMatchText(line.productType) ===
-            normalizedMatchText(REQUIRED_PRODUCT_TYPE)),
+  for (const rule of rules) {
+    const data = await graphqlJson<{ order: OrderPrinterOrder | null }>(
+      admin,
+      ORDER_QUERY,
+      { id: orderId, locationId: rule.locationId },
     );
 
-  if (!printableLines.length) {
+    if (!data.order) {
+      throw new Error(`Shopify order ${orderId} was not found.`);
+    }
+
+    orderName = data.order.name;
+    const matchingFulfillmentOrders = matchingOpenFulfillmentOrders(
+      data.order,
+      rule,
+      vendorNames,
+    );
+
+    if (!matchingFulfillmentOrders.length) {
+      continue;
+    }
+
+    const printableLines = matchingFulfillmentOrders
+      .flatMap((fulfillmentOrder) =>
+        fulfillmentOrder.lineItems.nodes.map(fulfillmentLineToPackingLine),
+      )
+      .filter(
+        (line) =>
+          line.quantity > 0 &&
+          vendorNames
+            .map(normalizedMatchText)
+            .includes(normalizedMatchText(line.vendor)),
+      );
+
+    if (!printableLines.length) {
+      continue;
+    }
+
+    const lines = await linesWithRestockQrCodes({
+      shop,
+      order: data.order,
+      lines: printableLines,
+    });
+
+    jobs.push({
+      ok: true,
+      order: data.order,
+      rule,
+      html: renderPackingSlipHtml({
+        order: data.order,
+        locationName: rule.locationName,
+        lines,
+        template: templateFromRule(rule).design,
+      }),
+    });
+  }
+
+  if (!jobs.length) {
     return {
-      ok: false as const,
-      reason: `Order ${data.order.name} has no unfulfilled ${REQUIRED_VENDOR}/${REQUIRED_PRODUCT_TYPE} items for ${rule.locationName}.`,
+      ok: false,
+      reason: orderName
+        ? `Order ${orderName} has no unfulfilled items for the selected fulfillment locations and vendors.`
+        : "No matching order was found.",
     };
   }
 
-  const lines = await linesWithRestockQrCodes({
-    shop,
-    order: data.order,
-    lines: printableLines,
-  });
+  return { ok: true, jobs, orderName };
+}
 
-  const html = renderPackingSlipHtml({
-    order: data.order,
-    locationName: rule.locationName,
-    lines,
-    template: templateFromRule(rule).design,
-  });
+async function buildPackingSlipJob(args: {
+  admin: AdminGraphqlClient;
+  shop: string;
+  orderId: string;
+}) {
+  const payload = await buildPackingSlipJobs(args);
 
-  return {
-    ok: true as const,
-    order: data.order,
-    rule,
-    html,
-  };
+  if (!payload.ok) {
+    return payload;
+  }
+
+  return payload.jobs[0];
 }
 
 export async function createPrintJobForOrder(
@@ -2721,48 +2901,67 @@ export async function createPrintJobForOrder(
   shop: string,
   orderId: string,
 ) {
-  const payload = await buildPackingSlipJob({ admin, shop, orderId });
+  const payload = await buildPackingSlipJobs({ admin, shop, orderId });
 
   if (!payload.ok) {
     return { created: false, reason: payload.reason };
   }
 
-  try {
-    const job = await prisma.printJob.create({
-      data: {
-        shop,
-        orderId: payload.order.id,
-        orderName: payload.order.name,
-        orderCreatedAt: new Date(payload.order.createdAt),
-        locationId: payload.rule.locationId,
-        locationName: payload.rule.locationName,
-        printerName: payload.rule.printerName,
-        printerProvider: LOCAL_AGENT_PROVIDER,
-        printerExternalId: null,
-        html: payload.html,
-        events: {
-          create: {
-            shop,
-            status: "QUEUED",
-            message: `Automatically queued for ${payload.rule.printerName}.`,
+  const results = [];
+
+  for (const jobPayload of payload.jobs) {
+    try {
+      const job = await prisma.printJob.create({
+        data: {
+          shop,
+          orderId: jobPayload.order.id,
+          orderName: jobPayload.order.name,
+          orderCreatedAt: new Date(jobPayload.order.createdAt),
+          locationId: jobPayload.rule.locationId,
+          locationName: jobPayload.rule.locationName,
+          printerName: jobPayload.rule.printerName,
+          printerProvider: LOCAL_AGENT_PROVIDER,
+          printerExternalId: null,
+          html: jobPayload.html,
+          events: {
+            create: {
+              shop,
+              status: "QUEUED",
+              message: `Automatically queued for ${jobPayload.rule.printerName}.`,
+            },
           },
         },
-      },
-    });
+      });
 
-    return { created: true, jobId: job.id, reason: "Queued." };
-  } catch (error) {
-    const prismaError = error as Prisma.PrismaClientKnownRequestError;
+      results.push({
+        created: true,
+        jobId: job.id,
+        locationName: jobPayload.rule.locationName,
+        reason: "Queued.",
+      });
+    } catch (error) {
+      const prismaError = error as Prisma.PrismaClientKnownRequestError;
 
-    if (prismaError.code === "P2002") {
-      return {
-        created: false,
-        reason: `Order ${payload.order.name} was already auto-printed for ${payload.rule.locationName}.`,
-      };
+      if (prismaError.code === "P2002") {
+        results.push({
+          created: false,
+          locationName: jobPayload.rule.locationName,
+          reason: `Order ${jobPayload.order.name} was already auto-printed for ${jobPayload.rule.locationName}.`,
+        });
+        continue;
+      }
+
+      throw error;
     }
-
-    throw error;
   }
+
+  const created = results.filter((result) => result.created);
+
+  return {
+    created: created.length > 0,
+    jobId: created[0]?.jobId,
+    reason: results.map((result) => result.reason).join(" "),
+  };
 }
 
 export async function buildPackingSlipPreviewHtml(
@@ -2791,65 +2990,75 @@ export async function createManualReprintJobForOrder(
   shop: string,
   orderId: string,
 ) {
-  const payload = await buildPackingSlipJob({ admin, shop, orderId });
+  const payload = await buildPackingSlipJobs({ admin, shop, orderId });
 
   if (!payload.ok) {
     return { created: false, reason: payload.reason };
   }
 
-  const data = {
-    orderName: payload.order.name,
-    orderCreatedAt: new Date(payload.order.createdAt),
-    locationName: payload.rule.locationName,
-    printerName: payload.rule.printerName,
-    printerProvider: LOCAL_AGENT_PROVIDER,
-    printerExternalId: null,
-    status: "QUEUED" as const,
-    html: payload.html,
-    providerJobId: null,
-    lastError: null,
-    claimedAt: null,
-    printedAt: null,
-    events: {
-      create: {
-        shop,
-        status: "QUEUED" as const,
-        message: `Manual reprint queued for ${payload.rule.printerName}.`,
-      },
-    },
-  };
+  const results = [];
 
-  try {
-    const job = await prisma.printJob.create({
-      data: {
-        shop,
-        orderId: payload.order.id,
-        locationId: payload.rule.locationId,
-        ...data,
-      },
-    });
-
-    return { created: true, jobId: job.id, reason: "Queued." };
-  } catch (error) {
-    const prismaError = error as Prisma.PrismaClientKnownRequestError;
-
-    if (prismaError.code !== "P2002") {
-      throw error;
-    }
-
-    const job = await prisma.printJob.update({
-      where: {
-        shop_orderId_locationId: {
+  for (const jobPayload of payload.jobs) {
+    const data = {
+      orderName: jobPayload.order.name,
+      orderCreatedAt: new Date(jobPayload.order.createdAt),
+      locationName: jobPayload.rule.locationName,
+      printerName: jobPayload.rule.printerName,
+      printerProvider: LOCAL_AGENT_PROVIDER,
+      printerExternalId: null,
+      status: "QUEUED" as const,
+      html: jobPayload.html,
+      providerJobId: null,
+      lastError: null,
+      claimedAt: null,
+      printedAt: null,
+      events: {
+        create: {
           shop,
-          orderId: payload.order.id,
-          locationId: payload.rule.locationId,
+          status: "QUEUED" as const,
+          message: `Manual reprint queued for ${jobPayload.rule.printerName}.`,
         },
       },
-      data,
-    });
+    };
 
-    return { created: true, jobId: job.id, reason: "Queued." };
+    try {
+      const job = await prisma.printJob.create({
+        data: {
+          shop,
+          orderId: jobPayload.order.id,
+          locationId: jobPayload.rule.locationId,
+          ...data,
+        },
+      });
+
+      results.push({ created: true, jobId: job.id, reason: "Queued." });
+    } catch (error) {
+      const prismaError = error as Prisma.PrismaClientKnownRequestError;
+
+      if (prismaError.code !== "P2002") {
+        throw error;
+      }
+
+      const job = await prisma.printJob.update({
+        where: {
+          shop_orderId_locationId: {
+            shop,
+            orderId: jobPayload.order.id,
+            locationId: jobPayload.rule.locationId,
+          },
+        },
+        data,
+      });
+
+      results.push({ created: true, jobId: job.id, reason: "Queued." });
+    }
   }
+
+  return {
+    created: results.some((result) => result.created),
+    jobId: results.find((result) => result.jobId)?.jobId,
+    reason: `Queued ${results.length} packing slip${results.length === 1 ? "" : "s"}.`,
+  };
 }
 
 function sanitizeRestockDocumentHtml(html: string) {

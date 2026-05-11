@@ -4948,6 +4948,106 @@ function RestockDocumentPanel({
   );
 }
 
+function selectionSummary(
+  selectedValues: string[],
+  items: { value: string; label: string }[],
+  fallback: string,
+) {
+  if (!selectedValues.length) {
+    return fallback;
+  }
+
+  const labels = selectedValues
+    .map((value) => items.find((item) => item.value === value)?.label || value)
+    .filter(Boolean);
+
+  if (labels.length <= 2) {
+    return labels.join(", ");
+  }
+
+  return `${labels.slice(0, 2).join(", ")} +${labels.length - 2} more`;
+}
+
+function FilterPicker({
+  label,
+  items,
+  selectedValues,
+  onChange,
+  emptyLabel,
+}: {
+  label: string;
+  items: { value: string; label: string; meta?: string }[];
+  selectedValues: string[];
+  onChange: (values: string[]) => void;
+  emptyLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = new Set(selectedValues);
+
+  function toggleValue(value: string) {
+    if (selected.has(value)) {
+      onChange(selectedValues.filter((selectedValue) => selectedValue !== value));
+      return;
+    }
+
+    onChange([...selectedValues, value]);
+  }
+
+  return (
+    <div className="filter-picker">
+      <span>{label}</span>
+      <button
+        type="button"
+        className="filter-picker-trigger"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {selectionSummary(selectedValues, items, emptyLabel)}
+      </button>
+      {open ? (
+        <div className="filter-picker-popover" role="dialog" aria-label={label}>
+          <div className="filter-picker-header">
+            <strong>{label}</strong>
+            <button type="button" onClick={() => setOpen(false)}>
+              Done
+            </button>
+          </div>
+          <div className="filter-picker-actions">
+            <button
+              type="button"
+              onClick={() => onChange(items.map((item) => item.value))}
+            >
+              Select all
+            </button>
+            <button type="button" onClick={() => onChange([])}>
+              Clear
+            </button>
+          </div>
+          <div className="filter-picker-list">
+            {items.length ? (
+              items.map((item) => (
+                <label className="filter-option" key={item.value}>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(item.value)}
+                    onChange={() => toggleValue(item.value)}
+                  />
+                  <span>
+                    <strong>{item.label}</strong>
+                    {item.meta ? <small>{item.meta}</small> : null}
+                  </span>
+                </label>
+              ))
+            ) : (
+              <p className="empty-state">No options available yet.</p>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function OrderPrinterDashboard() {
   const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
@@ -4958,7 +5058,22 @@ export default function OrderPrinterDashboard() {
     data.rule?.locationId || data.locations[0]?.id || "";
   const defaultPrinterName =
     data.rule?.printerName || data.printers[0]?.name || "";
-  const canSave = Boolean(defaultLocationId && defaultPrinterName);
+  const initialLocationIds = data.selectedLocationIds.length
+    ? data.selectedLocationIds
+    : defaultLocationId
+      ? [defaultLocationId]
+      : [];
+  const initialVendorNames = data.selectedVendorNames.length
+    ? data.selectedVendorNames
+    : data.vendorOptions.length
+      ? [data.vendorOptions[0]]
+      : [];
+  const [ruleLocationIds, setRuleLocationIds] = useState(initialLocationIds);
+  const [ruleVendorNames, setRuleVendorNames] = useState(initialVendorNames);
+  const canSave = Boolean(
+    ruleLocationIds.length && ruleVendorNames.length && defaultPrinterName,
+  );
+  const automationEnabled = data.rules.some((rule) => rule.enabled);
   const [activeAppTab, setActiveAppTab] = useState<AppTab>("operations");
   const [activeOperationsTab, setActiveOperationsTab] =
     useState<OperationsTab>("jobs");
@@ -4972,6 +5087,35 @@ export default function OrderPrinterDashboard() {
     null,
     2,
   );
+  const locationPickerItems = data.locations.map((location) => ({
+    value: location.id,
+    label: location.name,
+  }));
+  const vendorPickerItems = data.vendorOptions.map((vendor) => ({
+    value: vendor,
+    label: vendor,
+  }));
+  useEffect(() => {
+    setRuleLocationIds(
+      data.selectedLocationIds.length
+        ? data.selectedLocationIds
+        : defaultLocationId
+          ? [defaultLocationId]
+          : [],
+    );
+    setRuleVendorNames(
+      data.selectedVendorNames.length
+        ? data.selectedVendorNames
+        : data.vendorOptions.length
+          ? [data.vendorOptions[0]]
+          : [],
+    );
+  }, [
+    data.selectedLocationIds,
+    data.selectedVendorNames,
+    data.vendorOptions,
+    defaultLocationId,
+  ]);
 
   useEffect(() => {
     if (activeAppTab !== "operations") {
@@ -5055,23 +5199,44 @@ export default function OrderPrinterDashboard() {
               <section className="app-card">
                 <div className="app-card-header">Automation rule</div>
                 <p className="rule-note">
-                  Automatic printing is restricted to Canadian Off Grid orders
-                  containing EG4 Electronics vendor items or EG4 type items.
+                  Automatic printing runs only when an order has open
+                  fulfillment at one of the selected locations and contains at
+                  least one item from a selected vendor.
                 </p>
                 <Form method="post" className="settings-form">
                   <input type="hidden" name="intent" value="save-rule" />
+                  {ruleLocationIds.map((locationId) => (
+                    <input
+                      key={locationId}
+                      type="hidden"
+                      name="locationIds"
+                      value={locationId}
+                    />
+                  ))}
+                  {ruleVendorNames.map((vendorName) => (
+                    <input
+                      key={vendorName}
+                      type="hidden"
+                      name="vendorNames"
+                      value={vendorName}
+                    />
+                  ))}
+                  <FilterPicker
+                    label="Fulfillment locations"
+                    items={locationPickerItems}
+                    selectedValues={ruleLocationIds}
+                    onChange={setRuleLocationIds}
+                    emptyLabel="Choose locations"
+                  />
+                  <FilterPicker
+                    label="Vendors"
+                    items={vendorPickerItems}
+                    selectedValues={ruleVendorNames}
+                    onChange={setRuleVendorNames}
+                    emptyLabel="Choose vendors"
+                  />
                   <label>
-                    <span>Fulfillment location</span>
-                    <select name="locationId" defaultValue={defaultLocationId}>
-                      {data.locations.map((location) => (
-                        <option key={location.id} value={location.id}>
-                          {location.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Printer</span>
+                    <span>Printer for selected locations</span>
                     <select
                       name="printerName"
                       defaultValue={defaultPrinterName}
@@ -5101,9 +5266,9 @@ export default function OrderPrinterDashboard() {
                     <input
                       type="checkbox"
                       name="enabled"
-                      defaultChecked={data.rule?.enabled ?? true}
+                      defaultChecked={automationEnabled || !data.rules.length}
                     />
-                    <span>Print new orders for this location</span>
+                    <span>Print new orders for selected filters</span>
                   </label>
                   <button type="submit" disabled={!canSave || saving}>
                     Save settings
@@ -5150,7 +5315,7 @@ export default function OrderPrinterDashboard() {
                     <input type="hidden" name="reprint" value="1" />
                     <button
                       type="submit"
-                      disabled={saving || !data.rule?.enabled}
+                      disabled={saving || !automationEnabled}
                     >
                       Reprint Packing Slip
                     </button>
@@ -5200,8 +5365,8 @@ export default function OrderPrinterDashboard() {
                       </div>
                     ) : (
                       <p className="empty-state">
-                        No unfulfilled orders are currently assigned to this
-                        location.
+                        No unfulfilled orders currently match the selected
+                        locations and vendors.
                       </p>
                     )
                   ) : null}

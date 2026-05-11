@@ -1,0 +1,37 @@
+name: Windows Agent Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-agent:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows agent package
+        run: npm run agent:windows
+        env:
+          AGENT_RELEASE_TAG: ${{ github.ref_name }}
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/COGOrderPrinterAgent-windows-x64.zip
+          generate_release_notes: true

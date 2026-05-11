@@ -35,11 +35,12 @@ model Session {
 }
 
 model AppSettings {
-  id         String   @id @default(cuid())
-  shop       String   @unique
-  agentToken String   @unique
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id               String   @id @default(cuid())
+  shop             String   @unique
+  agentToken       String   @unique
+  vendorFilterJson String   @default("[\"EG4 Electronics\"]") @db.Text
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 }
 
 model PrinterRule {

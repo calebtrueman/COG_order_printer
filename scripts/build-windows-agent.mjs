@@ -5,6 +5,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rootDir = join(dirname(fileURLToPath(import.meta.url)), "..");
+const packageJson = JSON.parse(
+  await readFile(join(rootDir, "package.json"), "utf8"),
+);
+const agentReleaseTag =
+  process.env.AGENT_RELEASE_TAG ||
+  process.env.GITHUB_REF_NAME ||
+  `v${packageJson.version || "0.0.0"}`;
 const outDir = join(rootDir, "dist", "windows-agent");
 const cacheDir = join(rootDir, ".cache", "windows-agent");
 const agentExe = join(outDir, "COGOrderPrinterAgent.exe");
@@ -71,6 +78,12 @@ async function writeAgentFiles() {
         windows: {
           browserPath: "",
           sumatraPath: "SumatraPDF.exe",
+        },
+        updates: {
+          enabled: true,
+          repo: "calebtrueman/COG_order_printer",
+          assetName: "COGOrderPrinterAgent-windows-x64.zip",
+          checkIntervalMs: 3600000,
         },
       },
       null,
@@ -140,6 +153,12 @@ The service starts automatically after reboot. When it starts or detects a long
 sleep/lid-close gap, it asks the app to reconcile open Shopify orders created
 since the latest automatic print, queues any missed packing slips, then prints
 the queued jobs.
+
+Auto-updates:
+The service checks GitHub releases on startup, wake, and about once per hour.
+When a newer release with COGOrderPrinterAgent-windows-x64.zip is available, it
+downloads it, preserves agent-config.json, replaces the service files, and
+restarts the Windows service.
 `,
   );
 
@@ -171,6 +190,18 @@ SumatraPDF
       await readFile(pdfToPrinterLicense, "utf8"),
     );
   }
+
+  await writeFile(
+    join(outDir, "agent-version.json"),
+    `${JSON.stringify(
+      {
+        releaseTag: agentReleaseTag,
+        builtAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
 function buildAgentExe() {
