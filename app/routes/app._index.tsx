@@ -4968,6 +4968,12 @@ function selectionSummary(
   return `${labels.slice(0, 2).join(", ")} +${labels.length - 2} more`;
 }
 
+function selectionKey(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right))
+    .join("\u001f");
+}
+
 function FilterPicker({
   label,
   items,
@@ -5058,18 +5064,31 @@ export default function OrderPrinterDashboard() {
     data.rule?.locationId || data.locations[0]?.id || "";
   const defaultPrinterName =
     data.rule?.printerName || data.printers[0]?.name || "";
-  const initialLocationIds = data.selectedLocationIds.length
-    ? data.selectedLocationIds
-    : defaultLocationId
-      ? [defaultLocationId]
-      : [];
-  const initialVendorNames = data.selectedVendorNames.length
-    ? data.selectedVendorNames
-    : data.vendorOptions.length
-      ? [data.vendorOptions[0]]
-      : [];
-  const [ruleLocationIds, setRuleLocationIds] = useState(initialLocationIds);
-  const [ruleVendorNames, setRuleVendorNames] = useState(initialVendorNames);
+  const serverLocationIds = useMemo(
+    () =>
+      data.selectedLocationIds.length
+        ? data.selectedLocationIds
+        : defaultLocationId
+          ? [defaultLocationId]
+          : [],
+    [data.selectedLocationIds, defaultLocationId],
+  );
+  const serverVendorNames = useMemo(
+    () =>
+      data.selectedVendorNames.length
+        ? data.selectedVendorNames
+        : data.vendorOptions.length
+          ? [data.vendorOptions[0]]
+          : [],
+    [data.selectedVendorNames, data.vendorOptions],
+  );
+  const serverLocationKey = selectionKey(serverLocationIds);
+  const serverVendorKey = selectionKey(serverVendorNames);
+  const [ruleSelectionsDirty, setRuleSelectionsDirty] = useState(false);
+  const [ruleLocationIds, setRuleLocationIds] = useState(serverLocationIds);
+  const [ruleVendorNames, setRuleVendorNames] = useState(serverVendorNames);
+  const ruleLocationKey = selectionKey(ruleLocationIds);
+  const ruleVendorKey = selectionKey(ruleVendorNames);
   const canSave = Boolean(
     ruleLocationIds.length && ruleVendorNames.length && defaultPrinterName,
   );
@@ -5095,26 +5114,40 @@ export default function OrderPrinterDashboard() {
     value: vendor,
     label: vendor,
   }));
+  function updateRuleLocationIds(values: string[]) {
+    setRuleSelectionsDirty(true);
+    setRuleLocationIds(values);
+  }
+
+  function updateRuleVendorNames(values: string[]) {
+    setRuleSelectionsDirty(true);
+    setRuleVendorNames(values);
+  }
+
   useEffect(() => {
-    setRuleLocationIds(
-      data.selectedLocationIds.length
-        ? data.selectedLocationIds
-        : defaultLocationId
-          ? [defaultLocationId]
-          : [],
-    );
-    setRuleVendorNames(
-      data.selectedVendorNames.length
-        ? data.selectedVendorNames
-        : data.vendorOptions.length
-          ? [data.vendorOptions[0]]
-          : [],
-    );
+    const matchesSavedRule =
+      ruleLocationKey === serverLocationKey && ruleVendorKey === serverVendorKey;
+
+    if (ruleSelectionsDirty) {
+      if (matchesSavedRule) {
+        setRuleSelectionsDirty(false);
+      }
+
+      return;
+    }
+
+    if (!matchesSavedRule) {
+      setRuleLocationIds(serverLocationIds);
+      setRuleVendorNames(serverVendorNames);
+    }
   }, [
-    data.selectedLocationIds,
-    data.selectedVendorNames,
-    data.vendorOptions,
-    defaultLocationId,
+    ruleLocationKey,
+    ruleVendorKey,
+    ruleSelectionsDirty,
+    serverLocationIds,
+    serverLocationKey,
+    serverVendorNames,
+    serverVendorKey,
   ]);
 
   useEffect(() => {
@@ -5225,14 +5258,14 @@ export default function OrderPrinterDashboard() {
                     label="Fulfillment locations"
                     items={locationPickerItems}
                     selectedValues={ruleLocationIds}
-                    onChange={setRuleLocationIds}
+                    onChange={updateRuleLocationIds}
                     emptyLabel="Choose locations"
                   />
                   <FilterPicker
                     label="Vendors"
                     items={vendorPickerItems}
                     selectedValues={ruleVendorNames}
-                    onChange={setRuleVendorNames}
+                    onChange={updateRuleVendorNames}
                     emptyLabel="Choose vendors"
                   />
                   <label>
