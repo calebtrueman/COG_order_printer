@@ -25,6 +25,13 @@ function adminExtensionCorsHeaders(request: Request) {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: adminExtensionCorsHeaders(request),
+    });
+  }
+
   const { admin, cors, session } = await authenticate.admin(request);
   const url = new URL(request.url);
   const orderId = url.searchParams.get("orderId") || "";
