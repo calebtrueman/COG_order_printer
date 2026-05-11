@@ -1,4 +1,4 @@
-import type { LoaderFunctionArgs } from "react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import {
   buildPackingSlipPreviewHtml,
   verifySignedPrintPreviewToken,
@@ -31,7 +31,48 @@ function previewErrorHtml(title: string, message: string) {
 </html>`;
 }
 
-export const loader = async ({ params }: LoaderFunctionArgs) => {
+function previewCorsHeaders(request: Request) {
+  const origin = request.headers.get("Origin");
+  const headers = new Headers({
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Range",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Expose-Headers": "Content-Length, Content-Range",
+    "Access-Control-Max-Age": "86400",
+    Vary: "Origin",
+  });
+
+  headers.set(
+    "Access-Control-Allow-Origin",
+    origin?.endsWith(".myshopify.com") || origin === "https://admin.shopify.com"
+      ? origin
+      : "*",
+  );
+
+  return headers;
+}
+
+function previewDocumentHeaders(request: Request) {
+  const headers = previewCorsHeaders(request);
+
+  headers.set("Content-Type", "text/html; charset=utf-8");
+  headers.set("X-Robots-Tag", "noindex");
+  headers.set("Cache-Control", "private, no-store");
+  headers.set(
+    "Content-Security-Policy",
+    "frame-ancestors https://admin.shopify.com https://*.myshopify.com",
+  );
+
+  return headers;
+}
+
+export const loader = async ({ params, request }: LoaderFunctionArgs) => {
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: previewCorsHeaders(request),
+    });
+  }
+
   const token = params.token || "";
   const payload = verifySignedPrintPreviewToken(token);
 
@@ -43,10 +84,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
       ),
       {
         status: 403,
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "X-Robots-Tag": "noindex",
-        },
+        headers: previewDocumentHeaders(request),
       },
     );
   }
@@ -63,9 +101,20 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 
   return new Response(body, {
     status: preview.ok ? 200 : 422,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "X-Robots-Tag": "noindex",
-    },
+    headers: previewDocumentHeaders(request),
+  });
+};
+
+export const action = async ({ request }: ActionFunctionArgs) => {
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: previewCorsHeaders(request),
+    });
+  }
+
+  return new Response(null, {
+    status: 405,
+    headers: previewCorsHeaders(request),
   });
 };
